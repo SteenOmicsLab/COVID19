@@ -1,0 +1,4347 @@
+---
+title: "Covid"
+output: html_document
+date: "2023-04-26"
+---
+
+
+#Library
+
+```{r}
+
+#library(rlang)
+library(ggplot2)#, lib.loc = "/opt/R/4.0.2/lib/R/library")
+library(vctrs) #, lib.loc = "/opt/R/4.0.2/lib/R/library")
+library(tidyverse)
+
+#detach("package:vegan", unload=TRUE)
+
+library(rstatix)
+library(ggpubr)
+library(readr)
+library(readxl)
+library(data.table)
+library(RColorBrewer)
+library(data.table)
+library(plotly)
+library(MASS)
+library(pROC)
+library(ggbeeswarm)
+
+library(table1)
+library(survminer)
+library(survival)
+library(mlbench)
+library(rpart)
+library(rpart.plot)
+library(caret)
+#library(xgboost)
+library(car)
+library(DiagrammeR)
+library(party)
+#library(randomForest)
+#library(vsn)
+#library(ragg)
+library(colorspace)
+library(ggdist)
+library(ggrepel)
+library(DescTools)
+library(gghalves)
+library(sva) #COMBAAAT
+```
+
+
+#IMPORT DF
+
+```{r}
+#IMPORT DATAFRAME
+ArthurDF_withClinical_with_BMI <- read_csv("DF.csv")
+
+```
+
+#PCA
+```{r,fig.width=10,fig.height=10}
+
+
+ 
+ DF_IMPACC <- ArthurDF_withClinical_with_BMI %>% dplyr::select(-sample_type,-event_id,-phase,-event_date,-event_type,-event_location,-samples_collected,-respiratory_status,-participant_id,-enrollment_site,-admit_month,-admit_age,-sex,-race,-ethnicity,-pcr_date,-symptom_date,-trajectory_group,-respiratory_status_day14,-respiratory_status_day28,-phase1_2,-core_assay_cohort,-bmi,-participant_id,-discretized_admit_age_quantile,-discretized_admit_age_equalWidth,-death_date,-age_group,-trajectory_group1_23_45,-Symptom_Onset_time,-Death,-weight_classes,-participant_type,-discharge_dates,-trajectory_group123_45)
+ 
+ clinical_Data_file <- ArthurDF_withClinical_with_BMI[1:36]
+ 
+ 
+ 
+#copy the data
+DF_IMPACC_imputed <- DF_IMPACC %>% purrr::discard(~sum(is.na(.x))/length(.x)* 100 >=50)
+
+#We use a simple imputation. We assume that missing values are below detection threshold.
+#We therefore fill the missing values by taking half of the minimum value for a given protein.
+#the forloop here under fills that.
+for(i in 2:ncol(DF_IMPACC_imputed)) {       # for-loop over columns
+  halfmin <- min(DF_IMPACC_imputed[,i], na.rm = TRUE)/2
+  DF_IMPACC_imputed[,i][is.na(DF_IMPACC_imputed[,i])] <- halfmin
+}
+
+DF_IMPACC_imputed <- DF_IMPACC_imputed %>%
+  column_to_rownames("sample_id")
+
+#Zscore on colums (bneing samples)
+DF_IMPACC_imputed <- scale(t(DF_IMPACC_imputed))
+
+#PCA
+DF_IMPACC_PCA <- prcomp(t(DF_IMPACC_imputed))
+
+
+eigs <- DF_IMPACC_PCA$sdev^2
+variance_percentage <- (eigs / sum(eigs))*100
+pc1var <- round(variance_percentage[1],digits=0)
+pc2var <- round(variance_percentage[2],digits=0)
+
+DF_IMPACC_PCA_CLINICAL <- right_join(clinical_Data_file, rownames_to_column(data.frame(DF_IMPACC_PCA$x)), by = c("sample_id" = "rowname"))
+DF_IMPACC_PCA_CLINICAL <- DF_IMPACC_PCA_CLINICAL %>% mutate(phase = coalesce(phase, 3))
+DF_IMPACC_PCA_CLINICAL$phase <- as.factor(DF_IMPACC_PCA_CLINICAL$phase)
+
+
+#Plot
+PCA_PHASE123_PLOT <- DF_IMPACC_PCA_CLINICAL %>%
+  filter(phase %in% c(1,2,3)) %>%
+  ggplot(aes(x = PC1, y = PC2, fill = phase)) +
+  geom_point(shape = 21, size = 3, alpha  = 0.6)+
+  geom_xsideboxplot(orientation = "y", notch = T, outlier.colour = "white") +
+  geom_ysideboxplot(orientation = "x", notch = T, outlier.colour = "white") + 
+  xlab(paste('PC1',' (',pc1var,'% variance)',sep='')) +
+  ylab(paste('PC2',' (',pc2var,'% variance)',sep='')) +
+  scale_fill_manual(values = c("purple", "hotpink", "brown")) +
+  theme_bw(base_size=40) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_text(color="#000000", 
+                           size=40, angle=45),
+          axis.text.y = element_text( color="#000000", 
+                           size=40, angle=45)
+        )
+
+
+PCA_PHASE123_PLOT
+```
+
+
+
+
+
+
+
+
+
+
+#table1 
+
+
+```{r table 1}
+
+
+ArthurDF_V1 <- ArthurDF_withClinical_with_BMI %>% filter(event_type=="Visit 1") %>% filter(!is.na(trajectory_group))
+dat <-ArthurDF_V1
+
+dat$trajectory_group     <- factor(dat$trajectory_group, levels=1:5, labels=c("TG1-Full revovery", "TG2-Full recovery-Slow","TG3-Limited recovery","TG4-Partial recovery","TG5-Did not recover"))
+dat$sex     <- factor(dat$sex, levels=c("Male", "Female"), labels=c("Male", "Female"))
+dat$respiratory_status <- factor(dat$respiratory_status, levels=3:6, labels=c("3","4","5","6")) 
+dat$race <-  factor(dat$race, levels=c("American Indian / Alaska Native","Asian","Black / African American","Multiple","Native Hawaiian / Pacific Islander", "White","Other / Declined","Unknown / Unavailable"), labels=c("American Indian / Alaska Native","Asian","Black / African American","Multiple","Native Hawaiian / Pacific Islander", "White","Other / Declined","Unknown / Unavailable"))
+
+dat$Death <- factor(dat$Death, levels=c("TRUE","FALSE"),labels=c("Fatalities","Survivors"))
+
+dat$enrollment_site <-factor(dat$enrollment_site, 
+levels=c("Arizona","Baylor","Boston/BWH","Case Western","Drexel/Tower Health","Emory","Florida","ISMMS (Mt Sinai)","OHSU (Oregon)","OUHSC (Oklahoma)","Stanford","UCLA","UCSF","UT Austin","Yale"),labels=c("UA-Tucson","Baylor","Boston/BWH","Case Western","Drexel/Tower Health","Emory","UF","ISMMS (Mt Sinai)","OHSU (Oregon)","OUHSC (Oklahoma)","Stanford","UCLA","UCSF","UT Austin","Yale"))
+
+
+label(dat$admit_age)      <- "Age (y)"
+label(dat$sex)      <- "Sex"
+label(dat$bmi) <- "BMI"
+label(dat$symptom_date) <-  "Symptom onset (Days)"
+label(dat$respiratory_status) <-  "Respiratory status upon admission"
+label(dat$race) <- "Race"
+label(dat$enrollment_site) <- "Enrollment Site"
+label(dat$Death) <- "Outcome after 28 days"
+
+
+#more information https://cran.r-project.org/web/packages/table1/vignettes/table1-examples.html
+
+
+
+table1(~sex+ admit_age  + respiratory_status+Death+
+         bmi + symptom_date +enrollment_site | trajectory_group ,data=dat,rowlabelhead="Trajectory group", topclass="Rtable1-shade") # one level of stratification or topclass="Rtable1-zebra"
+
+
+table1(~enrollment_site | trajectory_group ,data=dat,rowlabelhead="Trajectory group", topclass="Rtable1-shade")
+
+
+```
+
+
+
+#NCAP
+##1
+```{r NCAP FIGURES}
+
+# BOX PLOT VISIT 1
+ArthurDF_withClinical_with_BMI_V1 <-   ArthurDF_withClinical_with_BMI %>% filter(event_type== "Visit 1")
+
+ArthurDF_withClinical_with_BMI_V1_traj <-  ArthurDF_withClinical_with_BMI_V1 %>% dplyr::select(trajectory_group,"N")
+
+ArthurDF_withClinical_with_BMI_V1_traj <-  ArthurDF_withClinical_with_BMI_V1_traj %>% filter(trajectory_group=="1" | trajectory_group=="2" |trajectory_group=="3" |trajectory_group=="4" |trajectory_group=="5")
+
+ArthurDF_withClinical_with_BMI_V1_traj$trajectory_group <- as.factor(ArthurDF_withClinical_with_BMI_V1_traj$trajectory_group)
+
+comparisons <- list( c("3","4"),
+                     c("3","5")
+                     )
+ symnum.args <- list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1), symbols = c("****", "***", "**", "*", "ns"))
+ 
+c
+
+ 
+ ANOVA_N <- ArthurDF_withClinical_with_BMI_V1_traj
+ 
+
+#take only proteins
+test <- colnames(ANOVA_N)[2:ncol(ANOVA_N)]
+
+#ANOVA long format
+ANOVA_DF_LONG <- ANOVA_N %>% gather(test, key = "protein",value = "Intensity")
+ANOVA_DF_LONG$Intensity <- as.numeric(ANOVA_DF_LONG$Intensity)
+ANOVA_DF_LONG$trajectory_group <- as.factor(ANOVA_DF_LONG$trajectory_group)
+ANOVA_DF_LONG$protein <- as.factor(ANOVA_DF_LONG$protein)
+
+
+
+results_ANOVA_V1_traj <- ANOVA_DF_LONG %>%
+  drop_na(Intensity) %>%
+ 
+  dplyr::group_by(protein) %>%
+  anova_test(Intensity ~ trajectory_group)
+
+
+
+#adjusted p-value BJ = benjamini-hochberg
+
+results_ANOVA_V1_traj$Padjusted <- p.adjust(results_ANOVA_V1_traj$p, method = "BH")
+
+ 
+ #post hoc test 
+results_postHoc_traj_group_V1 <- ANOVA_DF_LONG %>%
+drop_na(Intensity) %>%
+   dplyr::group_by(protein) %>%
+ tukey_hsd(Intensity ~ trajectory_group)
+results_postHoc_traj_group_V1%>% as.data.frame() %>% filter(p.adj<0.05) 
+ 
+ 
+
+
+
+ArthurDF_withClinical_with_BMI_NA <- ArthurDF_withClinical_with_BMI[!is.na(ArthurDF_withClinical_with_BMI$trajectory_group),]
+
+#box plot visit 2 and 3
+#V2
+ArthurDF_withClinical_with_BMI_V2 <-  ArthurDF_withClinical_with_BMI_NA %>% filter(event_type == "Visit 2")
+ArthurDF_withClinical_with_BMI_V2$trajectory_group <- as.factor(ArthurDF_withClinical_with_BMI_V2$trajectory_group)
+ p_v2 <- ggplot(ArthurDF_withClinical_with_BMI_V2, aes(x =trajectory_group, y = N,fill = trajectory_group)) +
+  geom_boxplot(alpha = 0.8) +
+  geom_point(aes(fill = trajectory_group), size = 3, shape = 21, position = position_jitterdodge()) +
+      scale_fill_manual(values=c("#ffeda0","#FEB24C","#FD8D3C","#E31A1C","#800026"))+
+  xlab("")+
+  ylab("LFQ intensity")+
+   theme_bw() +
+stat_compare_means(comparisons = comparisons, method = "t.test",hide.ns = TRUE,symnum.args=symnum.args) +
+ # ggtitle("N protein LFQ intensity") +
+  scale_x_discrete(labels=c("1" = "TG1", "2" = "TG2",
+                              "3" = "TG3","4" = "TG4","5" = "TG5"))
+
+ p_plot_v2 <- p_v2 + theme(
+plot.title = element_text(color="black", size=12, face="plain"),
+axis.title.x = element_text(color="black", size=12, face="plain"),
+axis.title.y = element_text(color="black", size=12, face="plain"),
+axis.text.x = element_text(face="plain", color="black",size=12,angle=45,hjust=1),
+          axis.text.y = element_text(face="plain", color="black",size=12)) +
+   theme(legend.position="none") 
+
+#V3
+ArthurDF_withClinical_with_BMI_V3 <-  ArthurDF_withClinical_with_BMI_NA %>% filter(event_type == "Visit 3")
+ArthurDF_withClinical_with_BMI_V3$trajectory_group <- as.factor(ArthurDF_withClinical_with_BMI_V3$trajectory_group)
+ p_v3 <- ggplot(ArthurDF_withClinical_with_BMI_V3, aes(x =trajectory_group, y = N,fill = trajectory_group)) +
+  geom_boxplot(alpha = 0.8) +
+  geom_point(aes(fill = trajectory_group), size = 3, shape = 21, position = position_jitterdodge()) +
+      scale_fill_manual(values=c("#ffeda0","#FEB24C","#FD8D3C","#E31A1C","#800026"))+
+  xlab("")+
+  ylab("LFQ intensity")+
+   theme_bw() +
+ stat_compare_means(comparisons = comparisons, method = "t.test",hide.ns = TRUE,symnum.args=symnum.args) +
+ # ggtitle("N protein LFQ intensity") +
+  scale_x_discrete(labels=c("1" = "TG1", "2" = "TG2",
+                              "3" = "TG3","4" = "TG4","5" = "TG5"))
+
+ p_plot_v3 <- p_v3 + theme(
+plot.title = element_text(color="black", size=12, face="plain"),
+axis.title.x = element_text(color="black", size=12, face="plain"),
+axis.title.y = element_text(color="black", size=12, face="plain"),
+axis.text.x = element_text(face="plain", color="black",size=12,angle=45,hjust=1),
+          axis.text.y = element_text(face="plain", color="black",size=12)) +
+   theme(legend.position="none") 
+ 
+ 
+ #V2 V3
+ 
+ ArthurDF_withClinical_with_BMI_V2_V3 <-  ArthurDF_withClinical_with_BMI_NA %>% filter(event_type == "Visit 2" | event_type == "Visit 3" )
+ArthurDF_withClinical_with_BMI_V2_V3$trajectory_group <- as.factor(ArthurDF_withClinical_with_BMI_V2_V3$trajectory_group)
+ p_v2_V3 <- ggplot(ArthurDF_withClinical_with_BMI_V2_V3, aes(x =trajectory_group, y = N,fill = trajectory_group)) +
+  geom_boxplot(alpha = 0.8) +
+  geom_point(aes(fill = trajectory_group), size = 3, shape = 21, position = position_jitterdodge()) +
+      scale_fill_manual(values=c("#ffeda0","#FEB24C","#FD8D3C","#E31A1C","#800026"))+
+  xlab("")+
+  ylab("LFQ intensity")+
+   theme_bw() +
+ # stat_compare_means(comparisons = comparisons, method = "t.test",hide.ns = TRUE,symnum.args=symnum.args) +
+ # ggtitle("N protein LFQ intensity") +
+  scale_x_discrete(labels=c("1" = "TG1", "2" = "TG2",
+                              "3" = "TG3","4" = "TG4","5" = "TG5"))
+
+ p_plot_V2_v3 <- p_v2_V3 + theme(
+plot.title = element_text(color="black", size=12, face="plain"),
+axis.title.x = element_text(color="black", size=12, face="plain"),
+axis.title.y = element_text(color="black", size=12, face="plain"),
+axis.text.x = element_text(face="plain", color="black",size=12,angle=45,hjust=1),
+          axis.text.y = element_text(face="plain", color="black",size=12)) +
+   theme(legend.position="none") 
+ 
+ 
+ 
+  # V1 V2 V3
+ ArthurDF_withClinical_with_BMI_NA <- ArthurDF_withClinical_with_BMI[!is.na(ArthurDF_withClinical_with_BMI$trajectory_group),]
+ ArthurDF_withClinical_with_BMI_V1_V2_V3 <-  ArthurDF_withClinical_with_BMI_NA %>% filter(event_type == "Visit 1" |event_type == "Visit 2" | event_type == "Visit 3" )
+ArthurDF_withClinical_with_BMI_V1_V2_V3$trajectory_group <- as.factor(ArthurDF_withClinical_with_BMI_V1_V2_V3$trajectory_group)
+
+
+
+comparisons <- list( c("1","2"),
+                     c("1","3"),
+                     c("1","4"),
+                     c("1","5"),
+                     c("2","3"),
+                     c("2","4"),
+                     c("2","5"),
+                     c("3","4"),
+                     c("3","5"),
+                     c("4","5")
+                     )
+ symnum.args <- list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1), symbols = c("****", "***", "**", "*", "ns"))
+
+
+ p_V1_V2_V3 <- ggplot(ArthurDF_withClinical_with_BMI_V1_V2_V3, aes(x =trajectory_group, y = N,fill = trajectory_group)) +
+  geom_boxplot(alpha = 0.8) +
+  geom_point(aes(fill = trajectory_group), size = 3, shape = 21, position = position_jitterdodge()) +
+      scale_fill_manual(values=c("#ffeda0","#FEB24C","#FD8D3C","#E31A1C","#800026"))+
+  xlab("")+
+  ylab("LFQ intensity")+
+   theme_bw() +
+  stat_compare_means(comparisons = comparisons, method = "t.test",hide.ns = TRUE,symnum.args=symnum.args) +
+ # ggtitle("N protein LFQ intensity") +
+  scale_x_discrete(labels=c("1" = "TG1", "2" = "TG2",
+                              "3" = "TG3","4" = "TG4","5" = "TG5"))
+
+ p_plot_V1_V2_V3 <- p_V1_V2_V3 + theme(
+plot.title = element_text(color="black", size=12, face="plain"),
+axis.title.x = element_text(color="black", size=12, face="plain"),
+axis.title.y = element_text(color="black", size=12, face="plain"),
+axis.text.x = element_text(face="plain", color="black",size=12,angle=45,hjust=1),
+          axis.text.y = element_text(face="plain", color="black",size=12)) +
+   theme(legend.position="none") 
+ 
+ #V1
+ 
+ ArthurDF_withClinical_with_BMI_V1_n <-  ArthurDF_withClinical_with_BMI_NA %>% filter(event_type == "Visit 1")
+ArthurDF_withClinical_with_BMI_V1_n$trajectory_group <- as.factor(ArthurDF_withClinical_with_BMI_V1_n$trajectory_group)
+ p_v1 <- ggplot(ArthurDF_withClinical_with_BMI_V1_n, aes(x =trajectory_group, y = N,fill = trajectory_group)) +
+  geom_boxplot(alpha = 0.8) +
+  geom_point(aes(fill = trajectory_group), size = 3, shape = 21, position = position_jitterdodge()) +
+      scale_fill_manual(values=c("#ffeda0","#FEB24C","#FD8D3C","#E31A1C","#800026"))+
+  xlab("")+
+  ylab("LFQ intensity")+
+   theme_bw() +
+ stat_compare_means(comparisons = comparisons, method = "t.test",hide.ns = TRUE,symnum.args=symnum.args) +
+ # ggtitle("N protein LFQ intensity") +
+  scale_x_discrete(labels=c("1" = "TG1", "2" = "TG2",
+                              "3" = "TG3","4" = "TG4","5" = "TG5"))
+
+ p_plot_v1 <- p_v1 + theme(
+plot.title = element_text(color="black", size=12, face="plain"),
+axis.title.x = element_text(color="black", size=12, face="plain"),
+axis.title.y = element_text(color="black", size=12, face="plain"),
+axis.text.x = element_text(face="plain", color="black",size=12,angle=45,hjust=1),
+          axis.text.y = element_text(face="plain", color="black",size=12)) +
+   theme(legend.position="none") 
+ 
+ 
+ 
+ #ggarrange(p_plot_v1,p_plot_v2,p_plot_v3,p_plot_V1_V2_V3)
+ 
+ 
+ 
+ #Positive guys N
+ 
+  DF_only_N_pos <- ArthurDF_withClinical_with_BMI[!is.na(ArthurDF_withClinical_with_BMI$N),]
+ DF_only_N_pos_visit <- DF_only_N_pos %>% filter(event_type == "Visit 1" |event_type == "Visit 2" |event_type == "Visit 3" |event_type == "Visit 4" |event_type == "Visit 5" |event_type == "Visit 6")
+ 
+ DF_only_N_pos_3 <- DF_only_N_pos_visit %>%
+   group_by(participant_id) %>%
+   filter(n()>2)%>%
+   ungroup()
+ 
+ DF_only_N_pos_3$trajectory_group <- as.factor(DF_only_N_pos_3$trajectory_group)
+plot_N <- ggplot(data=DF_only_N_pos_3, aes(x=event_type, y=N, group=participant_id,color=trajectory_group)) +
+  geom_line()+
+   scale_color_manual(values=c("#ffeda0","#FEB24C","#FD8D3C","#E31A1C","#800026"))+
+ # geom_line(linetype="dashed", color="blue", size=1.2)+
+  #geom_line(aes(linetype=participant_id))+
+  geom_point(color="red", size=2) +
+    theme_bw()
+
+   #geom_point(aes(shape=participant_id))
+
+ plot_N
+ 
+ #plot positive trajectory per trajectory group
+ 
+DF_only_N_pos_3_TG2 <- DF_only_N_pos_3 %>% filter(trajectory_group == "2")
+DF_only_N_pos_3_TG3 <- DF_only_N_pos_3 %>% filter(trajectory_group == "3")
+DF_only_N_pos_3_TG4 <- DF_only_N_pos_3 %>% filter(trajectory_group == "4")
+DF_only_N_pos_3_TG5 <- DF_only_N_pos_3 %>% filter(trajectory_group == "5")
+
+ plot_N_TG2 <- ggplot(data=DF_only_N_pos_3_TG2, aes(x=event_type, y=N, group=participant_id,color=trajectory_group)) +
+  geom_line()+
+   scale_color_manual(values=c("#FEB24C"))+
+  geom_point(color="red", size=2) +
+    theme_bw()
+ 
+ plot_N_TG3 <- ggplot(data=DF_only_N_pos_3_TG3, aes(x=event_type, y=N, group=participant_id,color=trajectory_group)) +
+  geom_line()+
+   scale_color_manual(values=c("#FD8D3C"))+
+  geom_point(color="red", size=2) +
+    theme_bw()
+ 
+ plot_N_TG4 <- ggplot(data=DF_only_N_pos_3_TG4, aes(x=event_type, y=N, group=participant_id,color=trajectory_group)) +
+  geom_line()+
+   scale_color_manual(values=c("#E31A1C"))+
+  geom_point(color="red", size=2) +
+    theme_bw()
+ 
+ plot_N_TG5 <- ggplot(data=DF_only_N_pos_3_TG5, aes(x=event_type, y=N, group=participant_id,color=trajectory_group)) +
+  geom_line()+
+   scale_color_manual(values=c("#800026"))+
+  geom_point(color="red", size=2) +
+    theme_bw()
+ 
+ 
+ ggarrange(plot_N_TG2,plot_N_TG3,plot_N_TG4,plot_N_TG5)
+ 
+ 
+ plot_N_TG5
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ # table visits trajectory groups
+ ArthurDF_V1_to_6 <- ArthurDF_withClinical_with_BMI %>% filter(event_type=="Visit 1"|event_type=="Visit 2"|event_type=="Visit 3"|event_type=="Visit 4"|event_type=="Visit 5"|event_type=="Visit 6")
+ ArthurDF_V1_to_6 <- ArthurDF_V1_to_6 %>% filter(trajectory_group == "1"|trajectory_group == "2"|trajectory_group == "3"|trajectory_group == "4"|trajectory_group == "5")
+ 
+ ArthurDF_V1_to_6$N[is.na(ArthurDF_V1_to_6$N)] = 0
+
+ #create column detected not detected for N protein
+N_pos <- ArthurDF_V1_to_6 %>% mutate(N_value = 
+                                                                case_when(
+  N>0 ~ "Detected",
+ N == 0 ~ "Not detected",
+ 
+  ))
+ 
+
+N_pos <- N_pos %>% dplyr::select("N_value", everything())
+
+
+# change visits to numeric
+N_pos <- N_pos %>% mutate(event_type_numeric = 
+                                                                case_when(
+  event_type=="Visit 1" ~ "1",
+  event_type=="Visit 2" ~ "2",
+  event_type=="Visit 3" ~ "3",
+  event_type=="Visit 4" ~ "4",
+  event_type=="Visit 5" ~ "5",
+  event_type=="Visit 6" ~ "6",
+  ))
+
+N_pos <- N_pos %>% dplyr::select("event_type_numeric", everything())
+
+dat <-N_pos
+
+
+
+dat$event_type_numeric     <- factor(dat$event_type_numeric, levels=1:6, labels=c("Admission", "Day 4","Day 7","Day 14","Day 21", "Day 28"))
+dat$N_value <- factor(dat$N_value, levels=c("Detected","Not detected"),labels=c("Detected","Not detected"))
+#dat$trajectory_group     <- factor(dat$trajectory_group, levels=1:5, labels=c("Full revovery", "Full recovery-Slow","Limited recovery","Partial recovery","Did not recover"))
+dat$respiratory_status <- factor(dat$respiratory_status, levels=1:7, labels=c("1", "2","3","4","5","6","7")) 
+
+label(dat$N_value) <- "Detection N protein"
+
+#more information https://cran.r-project.org/web/packages/table1/vignettes/table1-examples.html
+
+#table1(~N_value |event_type_numeric*trajectory_group ,data=dat,rowlabelhead="Day", topclass="Rtable1-grid Rtable1-shade") # one level of stratification or topclass="Rtable1-zebra"
+
+table1(~respiratory_status |event_type_numeric*N_value ,data=dat,rowlabelhead="Day", topclass="Rtable1-grid Rtable1-shade")
+
+
+```
+
+
+##FISHER EXTACT TEST
+
+```{r FISHER extact test NCAP plotting}
+ArthurDF_withClinical_V1 <- ArthurDF_withClinical_with_BMI %>% filter(event_type=="Visit 1")
+
+# remove unwanted column by putting "-" in select
+inputDF_proteins_FE <- ArthurDF_withClinical_V1 %>% dplyr::select(-sample_id) %>% dplyr::select(-sample_type) %>% dplyr::select(-event_id) %>% dplyr::select(-phase) %>%dplyr::select(-event_date) %>% dplyr::  select(-event_location) %>% dplyr::select(-samples_collected) %>%dplyr::select(-respiratory_status) %>% dplyr::select(-participant_id) %>% dplyr::select(-participant_type) %>%dplyr::select(-enrollment_site) %>% dplyr::select(-admit_month) %>% dplyr::select(-admit_age) %>%dplyr::select(-sex) %>% dplyr::select(-race) %>% dplyr::select(-ethnicity) %>% dplyr::select(-pcr_date) %>% dplyr::select(-symptom_date) %>% dplyr::select(-respiratory_status_day14) %>% dplyr::select(-respiratory_status_day28) %>%dplyr::select(-phase1_2) %>%dplyr::select(-core_assay_cohort) %>%dplyr::select(-core_assay_comment) %>%dplyr::select(-discretized_admit_age_quantile) %>% dplyr::select(-discretized_admit_age_equalWidth) %>%dplyr::select(-age_group) %>%dplyr::select(-trajectory_group123_45) %>% dplyr::select(-trajectory_group1_23_45) %>%dplyr:: select(-Symptom_Onset_time) %>% dplyr::select(-event_type) %>% dplyr::select(-bmi) %>% dplyr::select(-discharge_dates) %>% dplyr::select(-death_date) %>% dplyr::select(-Death) %>% dplyr::select(-weight_classes)
+
+inputDF_proteins_FE <- inputDF_proteins_FE %>% filter(trajectory_group=="1"|trajectory_group=="2"|trajectory_group=="3"|trajectory_group=="4"|trajectory_group=="5"|trajectory_group=="6")
+
+
+#Count for all samples
+inputDF_proteins_FE_traj_only <- inputDF_proteins_FE %>% dplyr::select(trajectory_group)
+inputDF_proteins_FE_traj_only_group <- inputDF_proteins_FE_traj_only %>% group_by(trajectory_group)
+number_traj_group <- table(inputDF_proteins_FE_traj_only_group['trajectory_group'])
+
+#count number of missing value per trajectory group
+by_trajectory_group <- inputDF_proteins_FE %>% group_by(trajectory_group)
+missing_value <-  by_trajectory_group %>%  summarise_all(funs(sum(is.na(.))))
+
+
+#IDentify proteins for for loop
+proteinnames_forloop <- colnames(inputDF_proteins_FE[2:ncol(inputDF_proteins_FE)])
+
+#initiatise items for forloop
+kebab <- 0
+
+#create dataframe for fisher exat test 
+Fisher_exact_test_pairwise_results <- data.frame(matrix(ncol = 7, nrow = 0))
+x <- c("group1", "group2", "n","p","p.adj","p.adj.signif","Protein")
+colnames(Fisher_exact_test_pairwise_results) <- x
+
+Fisher_exact_test_normal_results <- data.frame(matrix(ncol = 3, nrow = 0))
+a <- c("n","p","p.signif")
+colnames(Fisher_exact_test_normal_results) <- a
+
+
+#Run loop
+for (i in proteinnames_forloop){
+  kebab <- kebab + 1
+  print(kebab)
+  #Select protein i
+  inputDF_proteins_FE_temp <- inputDF_proteins_FE %>% dplyr::select(trajectory_group , i) 
+  
+  #count NA
+  by_trajectory_group <- inputDF_proteins_FE_temp %>% group_by(trajectory_group)
+  missing_value <-  by_trajectory_group %>%  summarise_all(funs(sum(is.na(.)))) 
+  
+  #count valid
+  Valid_value <- number_traj_group - by_trajectory_group %>% summarise_all(funs(sum(is.na(.))))
+  Valid_value_sub <- Valid_value %>% dplyr::select(-trajectory_group)
+  
+
+  #combine missing value and valid value
+  blended <- data.frame(cbind(missing_value, Valid_value_sub))
+  blended <- blended %>% column_to_rownames("trajectory_group")
+  blended_transposed <- as.data.frame(t(blended))
+  
+
+  #FIsher exact test
+  temp_results <-fisher_test(blended_transposed,workspace = 2e+09,detailed=TRUE)
+  inputDF_proteins_FE_temp_name <- inputDF_proteins_FE_temp %>% dplyr::select(-trajectory_group)
+  temp_results$Protein <- colnames(inputDF_proteins_FE_temp_name) 
+  Fisher_exact_test_normal_results <-  rbind(Fisher_exact_test_normal_results,temp_results)
+  
+  #Fisher exact test
+  temp_results2 <-pairwise_fisher_test(blended_transposed)
+  inputDF_proteins_FE_temp_name <- inputDF_proteins_FE_temp %>% dplyr::select(-trajectory_group)
+  temp_results2$Protein <- colnames(inputDF_proteins_FE_temp_name) 
+  Fisher_exact_test_pairwise_results <-  rbind(Fisher_exact_test_pairwise_results,temp_results2)
+  
+}
+
+Fisher_exact_test_normal_results$p_adjusted <- p.adjust(Fisher_exact_test_normal_results$p, method = "BH")
+
+Fisher_exact_test_pairwise_results %>% filter(Protein == "N")
+
+Fisher_exact_test_normal_results_filter <- Fisher_exact_test_normal_results %>% as.data.frame() %>% filter(p_adjusted<0.005)
+
+write.csv(Fisher_exact_test_normal_results_filter,"Fisher_exact_test_normal_results_filter.csv")
+
+
+#Count for all samples
+inputDF_proteins_FE_traj_only <- inputDF_proteins_FE %>% dplyr::select(trajectory_group)
+inputDF_proteins_FE_traj_only_group <- inputDF_proteins_FE_traj_only %>% group_by(trajectory_group)
+#count number of samples/ trajectory group
+number_traj_group <- table(inputDF_proteins_FE_traj_only_group['trajectory_group'])
+#count number of missing value per trajectory group
+missing_value <-  by_trajectory_group %>%  summarise_all(funs(sum(is.na(.)))) 
+
+#IDentify proteins for for loop
+proteinnames_forloop <- colnames(inputDF_proteins_FE[2:ncol(inputDF_proteins_FE)])
+
+#initiatise items for forloop to keep track
+kebab <- 0
+
+
+# create dataframe for the frequency results
+Frequency_results2 <- data.frame(matrix(ncol = 6, nrow = 0))
+x <- c("1","2","3","4","5","")
+colnames(Frequency_results2) <- x
+
+
+#Run loop
+for (i in proteinnames_forloop){
+  kebab <- kebab + 1
+  print(kebab)
+  #Select protein i
+  inputDF_proteins_FE_temp <- inputDF_proteins_FE %>% dplyr::select(trajectory_group , i) 
+  
+  #count NA
+  by_trajectory_group <- inputDF_proteins_FE_temp %>% group_by(trajectory_group)
+  missing_value <-  by_trajectory_group %>%  summarise_all(funs(sum(is.na(.)))) 
+  
+
+  number_traj_group_d <-  as.data.frame(number_traj_group)
+  
+# caculation of frequency 
+  temp <-  as.data.frame(t(as.data.frame((1 - missing_value[,2]/number_traj_group_d[,2])*100)))
+  inputDF_proteins_FE_temp_name <- inputDF_proteins_FE_temp %>% dplyr::select(-trajectory_group)
+  temp$Protein <- colnames(inputDF_proteins_FE_temp_name) 
+  # need temp to store temporary data and rbind to add new data to old
+  Frequency_results2 <-  rbind(Frequency_results2,temp)
+
+}
+
+colnames(Frequency_results2) <- c("1","2","3","4","5","Protein")
+
+
+
+```
+
+
+
+
+##plotting NCAP figures
+```{r plotting N frequency,fig.width=20, fig.height=10}
+inputDF_proteins_FE_frequency <- inputDF_proteins_FE %>% dplyr::select(trajectory_group | N)
+by_trajectory_group_frequency <- inputDF_proteins_FE_frequency %>% group_by(trajectory_group)
+
+Valid_value_freq <- number_traj_group - by_trajectory_group_frequency %>% summarise_all(funs(sum(is.na(.))))
+valid_value_sub_freq_N <- Valid_value_freq %>% dplyr:: select(-trajectory_group)
+
+
+
+Valid_value_freq$frequency_prot <- (valid_value_sub_freq_N/number_traj_group)*100
+trajectory_group_plot <- c("Full Recovery","Full Recovery - Slow","Limited Recovery","Partial Recovery","Did Not Recover")
+Valid_value_freq$trajectory_group_plot <- trajectory_group_plot
+FE_plotting <-  Valid_value_freq
+FE_plotting <- as.data.frame(FE_plotting)
+FE_plotting$frequency_prot <- unlist(FE_plotting$frequency_prot)
+FE_plotting$trajectory_group_plot <- factor(FE_plotting$trajectory_group_plot,levels = c("Full Recovery","Full Recovery - Slow","Limited Recovery","Partial Recovery","Did Not Recover"))
+
+
+
+comparisons <- list( 
+                     c("3","4"),
+                     c("3","5")
+                     )
+ 
+ 
+ 
+ p <- ggplot(ArthurDF_withClinical_with_BMI_V1_traj, aes(x =trajectory_group, y = N,fill = trajectory_group)) +
+  geom_boxplot(alpha = 0.5,lwd=2) +
+  geom_point(aes(fill = trajectory_group), size = 3, shape = 21, position = position_jitterdodge()) +
+      scale_fill_manual(values=c("#ffeda0","#FEB24C","#FD8D3C","#E31A1C","#800026"))+
+  xlab("")+
+  ylab("LFQ intensity")+
+   theme_bw() +
+  stat_compare_means(comparisons = comparisons, method = "t.test",hide.ns = TRUE,symnum.args=symnum.args) +
+ # ggtitle("N protein LFQ intensity") +
+  scale_x_discrete(labels=c("1" = "TG1", "2" = "TG2",
+                              "3" = "TG3","4" = "TG4","5" = "TG5"))+
+   scale_y_continuous(limits = c(11,18), expand = c(0, 0))
+
+ 
+ 
+ 
+ 
+ p_plot <- p + theme_light(base_size = 22) +
+   theme(legend.position="none", axis.text = element_text(face="bold")) 
+ 
+
+ p_plot
+ 
+ 
+ 
+ # frequency_prot
+# trajectory_group_plot
+ #Flip
+ freq_plot_NCAP_flipped <- ggplot(FE_plotting, aes(x =trajectory_group_plot, y =frequency_prot,fill=trajectory_group_plot)) +
+ geom_bar(stat="identity")+
+scale_fill_manual(values = c("#ffeda0", "#FEB24C", "#FD8D3C", "#E31A1C", "#800026"))+
+  scale_x_discrete(labels=c("Full Recovery" = "TG1", "Full Recovery - Slow" = "TG2",
+                              "Limited Recovery" = "TG3","Partial Recovery" = "TG4","Did Not Recover" = "TG5"))+
+  ylab("Frequency (%)") + # for the y axis label
+   xlab("")+ # for the y axis label
+  theme_bw() +
+ # coord_cartesian(ylim = c(0,50),expand = c(0,0)) #ylim(0,50)
+    coord_cartesian(ylim = c(0,50),expand = FALSE) #ylim(0,50)
+
+freq_plot_NCAP_flipped2 <-  freq_plot_NCAP_flipped + theme_light(base_size = 22) +
+   theme(legend.position="none", axis.text = element_text(face="bold"))
+
+freq_plot_NCAP_flipped2
+
+
+
+
+#data frame NCAP
+NCAP_frequency_weeks <- read_csv("C:/Users/CH209897/Dropbox (BCH)/Data Exchange Kinga-AV/IMPACC/Analysis/NCAP_frequency_weeks.csv")
+ 
+level_order <- c('Admission', 'week 1', 'week 2', 'week 3','week 4')
+
+
+
+NCAP_frequency_weeks$subgroup <- as.factor(NCAP_frequency_weeks$subgroup)
+
+
+NCAP_frequency_weeks_plot <-  ggplot(NCAP_frequency_weeks,                                    
+       aes(x = factor(group,level = level_order),
+           y = values,
+           fill = subgroup))+
+           scale_fill_manual(values = c("#ffeda0", "#FEB24C", "#FD8D3C", "#E31A1C", "#800026"))+
+            scale_x_discrete(labels=c("Admission" = "ADM", "week 1" = "week 1",
+                              "week 2" = "week 2","week 3" = "week 3","week 4" = "week 4" ))  +   #,"Day 28" = "V6"))+
+           geom_bar(stat = "identity", position = "dodge")+
+           xlab("")+
+           ylab("Frequency (%)")+
+          scale_y_continuous(limits = c(0,50), expand = c(0, 0)) +
+          theme_bw()
+
+
+
+
+ NCAP_frequency_weeks_plot2 <- NCAP_frequency_weeks_plot + theme_light(base_size = 22) +
+   theme(legend.position="none",
+         axis.text = element_text(face="bold"))
+
+a <- ggarrange(p_plot,freq_plot_NCAP_flipped2,NCAP_frequency_weeks_plot2,nrow = 1, labels = c("A", "B","C"))  
+
+
+
+```
+
+
+#ANOVA NCAP + post-hoc test
+
+```{r}
+
+protein <- colnames(ArthurDF_withClinical_with_BMI)[37:ncol(ArthurDF_withClinical_with_BMI)]
+COVID_Long_DF <- ArthurDF_withClinical_with_BMI %>% gather(protein, key = "protein",value = "Intensity")
+
+
+#filter 50% missing  values
+DF_clinical_50p <- COVID_Long_DF %>% 
+  filter(event_type=="Visit 1") %>%
+  filter(trajectory_group=="1" | trajectory_group=="2"| trajectory_group=="3"| trajectory_group=="4"| trajectory_group=="5") %>%
+  filter(protein=="N") %>%
+  dplyr::select(sample_id,event_type, trajectory_group,protein, Intensity)  #clean up by selecting the original columns
+
+#ANOVA
+results_t_test <- DF_clinical_50p %>%
+  drop_na(Intensity) %>%
+  anova_test(Intensity ~ trajectory_group,detailed=T)
+
+#adjusted p-value BJ = benjamini-hochberg
+results_t_test$Padjusted <- p.adjust(results_t_test$p, method = "BH")
+
+DF_clinical_50p$trajectory_group <- as.factor(DF_clinical_50p$trajectory_group)
+
+#post hoc test 
+results_postHoc_traj_group_V1 <- DF_clinical_50p %>%
+ drop_na(Intensity) %>%
+ tukey_hsd(Intensity ~ trajectory_group)
+results_post_hoc_adj <-  results_postHoc_traj_group_V1%>% as.data.frame() 
+
+
+
+```
+
+
+
+
+
+
+#ANOVA ADMISSION
+
+```{r FIGURE 2 ANOVA VISIT1 based on trajectory,fig.width=12, fig.height=10}
+#BiocManager::install("ComplexHeatmap")
+library(ComplexHeatmap)
+#remove NA in trajectory group
+ArthurDF_withClinical_with_BMI_noNA_Traj <- ArthurDF_withClinical_with_BMI[!is.na(ArthurDF_withClinical_with_BMI$trajectory_group),]
+
+library(dplyr)
+# remove unwanted column by putting "-" in select REMOVE ALL BUT trajectory group & event_type
+ANOVA_DF <- ArthurDF_withClinical_with_BMI_noNA_Traj %>% dplyr::select(-sample_id) %>% dplyr::select(-sample_type) %>% dplyr::select(-event_id) %>% dplyr::select(-phase) %>%dplyr::select(-event_date) %>%   dplyr::select(-event_location) %>% dplyr::select(-samples_collected) %>%dplyr::select(-respiratory_status) %>% dplyr::select(-participant_id) %>% dplyr::select(-participant_type) %>%dplyr::select(-enrollment_site) %>% dplyr::select(-admit_month) %>% dplyr::select(-admit_age) %>%  dplyr::select(-sex) %>% dplyr::select(-race) %>% dplyr::select(-ethnicity) %>%dplyr:: select(-pcr_date) %>% dplyr::select(-symptom_date) %>% dplyr::select(-respiratory_status_day14)%>% dplyr::select(-respiratory_status_day28) %>%dplyr::select(-core_assay_cohort) %>%dplyr::select(-core_assay_comment) %>% dplyr::select(-age_group) %>%dplyr::select(-trajectory_group123_45) %>% dplyr::select(-Symptom_Onset_time) %>% dplyr::select(-bmi) %>% dplyr::select(-weight_classes) %>%dplyr::select(-Death) %>% dplyr::select(-discretized_admit_age_quantile) %>% dplyr::select(-discretized_admit_age_equalWidth) %>% dplyr::select(-discharge_dates) %>% dplyr::select(-trajectory_group1_23_45)  %>% dplyr::select(-death_date)
+
+#copy the data, use 30% cut off filter.
+ANOVA_DF_filtered <- ANOVA_DF %>% purrr::discard(~sum(is.na(.x))/length(.x)* 100 >=70)
+
+#take only proteins
+test <- colnames(ANOVA_DF_filtered)[3:ncol(ANOVA_DF_filtered)]
+
+tet_DF <- as.data.frame(test)
+tet_DF
+
+#ANOVA long format
+ANOVA_DF_LONG <- ANOVA_DF_filtered %>% gather(test, key = "protein",value = "Intensity")
+ANOVA_DF_LONG$Intensity <- as.numeric(ANOVA_DF_LONG$Intensity)
+ANOVA_DF_LONG$trajectory_group <- as.factor(ANOVA_DF_LONG$trajectory_group)
+ANOVA_DF_LONG$protein <- as.factor(ANOVA_DF_LONG$protein)
+ANOVA_DF_LONG$event_type <- as.factor(ANOVA_DF_LONG$event_type)
+
+
+
+
+results_ANOVA_V1_traj <- ANOVA_DF_LONG %>%
+  drop_na(Intensity) %>%
+  filter(event_type == "Visit 1") %>%
+  dplyr::group_by(protein) %>%
+  anova_test(Intensity ~ trajectory_group)
+
+
+
+#adjusted p-value BJ = benjamini-hochberg
+
+results_ANOVA_V1_traj$Padjusted <- p.adjust(results_ANOVA_V1_traj$p, method = "BH")
+
+results_ANOVA_V1_traj_sign <- results_ANOVA_V1_traj  %>% as.data.frame() %>% filter(Padjusted < 0.05)
+results_ANOVA_V1_traj_sign_prot <- as.data.frame(results_ANOVA_V1_traj_sign$protein)
+
+#IGs to filter out
+results_ANOVA_V1_traj_sign_IG <- as.data.frame(results_ANOVA_V1_traj_sign_prot[166:238,])
+colnames(results_ANOVA_V1_traj_sign_IG)[1] <- "IG"
+
+#post hoc test 
+results_postHoc_traj_group_V1 <- ANOVA_DF_LONG %>%
+ drop_na(Intensity) %>%
+ filter(event_type == "Visit 1") %>%
+ dplyr::group_by(protein) %>%
+ tukey_hsd(Intensity ~ trajectory_group)
+results_post_hoc_adj <-  results_postHoc_traj_group_V1%>% as.data.frame() %>% filter(p.adj<0.05)# %>% filter(group1==3)
+
+
+
+results_post_hoc_adj2 <-  results_postHoc_traj_group_V1%>% as.data.frame() # %>% filter(group1==3)
+
+
+
+
+#better way to select 
+ANOVA_DF_clustering <- ArthurDF_withClinical_with_BMI_noNA_Traj %>% dplyr::select(event_id,respiratory_status,event_date,event_type,participant_id,enrollment_site,admit_month,admit_age,age_group,sex,race,ethnicity,pcr_date,symptom_date,Symptom_Onset_time,trajectory_group,trajectory_group123_45,weight_classes,Death, (results_ANOVA_V1_traj %>% as.data.frame() %>% filter(Padjusted < 0.05))$protein)
+
+
+#deleteIGs
+`%not_in%` <- purrr::negate(`%in%`)
+ANOVA_DF_clustering_F <- ANOVA_DF_clustering[colnames(ANOVA_DF_clustering) %not_in% results_ANOVA_V1_traj_sign_IG$IG]
+
+
+
+#keep V1
+ANOVA_DF_clustering_V1 <-  ANOVA_DF_clustering_F %>%  filter(event_type == "Visit 1")
+
+#copy data frame
+ANOVA_DF_clustering_V1_zscored <- ANOVA_DF_clustering_V1
+
+#only replace some columns
+ANOVA_DF_clustering_V1_zscored[20:324] <- as.data.frame(scale(ANOVA_DF_clustering_V1_zscored[20:324],center = TRUE,scale=TRUE))
+
+
+#heatMAP
+ANOVA_DF_clustering_V1_zscored <- ANOVA_DF_clustering_V1_zscored[order(ANOVA_DF_clustering_V1_zscored$trajectory_group),]
+
+ANOVA_DF_clustering_V1_zscored_t = as.data.frame(t(ANOVA_DF_clustering_V1_zscored))
+
+colnames(ANOVA_DF_clustering_V1_zscored_t) <- rownames(ANOVA_DF_clustering_V1_zscored)
+rownames(ANOVA_DF_clustering_V1_zscored_t) <- colnames(ANOVA_DF_clustering_V1_zscored)
+
+
+ANOVA_DF_clustering_V1_zscored_t_numeric <- ANOVA_DF_clustering_V1_zscored_t[20:nrow(ANOVA_DF_clustering_V1_zscored_t),]
+ANOVA_DF_clustering_V1_zscored_t_numeric <- mutate_all(ANOVA_DF_clustering_V1_zscored_t_numeric, function(x) as.numeric(as.character(x)))
+
+
+
+
+
+library(ComplexHeatmap)
+library(circlize)
+
+
+
+ANOVA_DF_clustering_V1_zscored_t = as.data.frame(t(ANOVA_DF_clustering_V1_zscored))
+colnames(ANOVA_DF_clustering_V1_zscored_t) <- rownames(ANOVA_DF_clustering_V1_zscored)
+rownames(ANOVA_DF_clustering_V1_zscored_t) <- colnames(ANOVA_DF_clustering_V1_zscored)
+
+ANOVA_DF_clustering_V1_zscored_t_numeric <- ANOVA_DF_clustering_V1_zscored_t[20:nrow(ANOVA_DF_clustering_V1_zscored_t),]
+ANOVA_DF_clustering_V1_zscored_t_numeric <- mutate_all(ANOVA_DF_clustering_V1_zscored_t_numeric, function(x) as.numeric(as.character(x)))
+
+proteins <- as.matrix(ANOVA_DF_clustering_V1_zscored_t_numeric)
+clinical <-as.matrix(ANOVA_DF_clustering_V1_zscored_t[c("trajectory_group","admit_age","Death","sex","symptom_date","respiratory_status"),])
+#heapmap_info <- as.data.frame(t(ANOVA_DF_clustering_V1_zscored_t[c("trajectory_group"),]))
+
+
+Annot_trajectorygroup <-  HeatmapAnnotation(trajectory_group=clinical["trajectory_group",],
+                                           col = list(trajectory_group = c("1" = "#ffeda0",
+                                                                            "2" = "#FEB24C",
+                                                                            "3" = "#FD8D3C",
+                                                                           "4"="#E31A1C",
+                                                                           "5"="#800026")))
+
+Annot_Resp_status <-  HeatmapAnnotation(respiratory_status=clinical["respiratory_status",],
+                                          col = list(respiratory_status = c(
+                                                                           "6" = "#7b3294",
+                                                                            "5" = "#c2a5cf",
+                                                                           "4"="#a6dba0",
+                                                                           "3"="#008837")))
+
+
+Annot_Age <- HeatmapAnnotation(age = anno_lines(as.numeric(clinical["admit_age",],size = unit(0.1, "mm"))))
+
+
+Annot_death <- HeatmapAnnotation(death = clinical["Death",],
+                                         col = list(death = c("TRUE" = "black", "FALSE" = "white")))
+
+Annot_sex <- HeatmapAnnotation(sex = clinical["sex",], col = list(sex = c("Female" = "#DC2543", "Male" = "#1E94A0")))
+
+
+
+Annotlist <- c(Annot_trajectorygroup)
+
+
+
+
+col_fun = colorRamp2(c(-1.5, 0, 1.5), c("blue", "white", "red"))
+col_fun(seq(-2,2))
+
+
+Heatmap(proteins, 
+        column_split = clinical["trajectory_group",],
+        top_annotation = Annotlist,
+        cluster_column_slices=FALSE,
+        na_col = "grey",
+        col = col_fun,
+        row_split = 3,
+        row_names_gp = grid::gpar(fontsize = 3),
+        column_names_gp = grid::gpar(fontsize = 0),
+        show_heatmap_legend = TRUE,
+          column_gap = unit(3, "mm"),
+        show_row_names = F,
+        show_column_names = F
+      )
+
+complexHeat <-Heatmap(proteins, 
+        column_split = clinical["trajectory_group",],
+        top_annotation = Annotlist,
+        cluster_column_slices=FALSE,
+        na_col = "grey",
+        col = col_fun,
+        row_split = 3,
+        row_names_gp = grid::gpar(fontsize = 3),
+        column_names_gp = grid::gpar(fontsize = 0),
+        show_heatmap_legend = TRUE,
+          column_gap = unit(2, "mm"),
+        show_row_names = F,
+        show_column_names = F,
+        use_raster = TRUE, 
+        raster_by_magick = TRUE
+      )
+
+
+# Saving row names of cluster one
+c1 <- t(t(row.names(proteins[row_order(complexHeat)[[1]],])))
+write.table(c1,"c1_ids.list", sep="\n", quote=F, row.names=F,col.names=F)
+
+# Saving row names of cluster two
+c2 <- t(t(row.names(proteins[row_order(complexHeat)[[2]],])))
+write.table(c2,"c2_ids.list", sep="\n", quote=F, row.names=F,col.names=F)
+
+# Saving row names of cluster three
+c3 <- t(t(row.names(proteins[row_order(complexHeat)[[3]],])))
+write.table(c3,"c3_ids.list", sep="\n", quote=F, row.names=F,col.names=F)
+
+
+
+```
+
+#heatmap only cluster 2
+
+```{r}
+
+c2_Df <- as.data.frame(c2)
+#better way to select 
+ANOVA_DF_clustering <- ArthurDF_withClinical_with_BMI_noNA_Traj %>% dplyr::select(event_id,respiratory_status,event_date,event_type,participant_id,enrollment_site,admit_month,admit_age,age_group,sex,race,ethnicity,pcr_date,symptom_date,Symptom_Onset_time,trajectory_group,trajectory_group123_45,weight_classes,Death,c2_Df$V1)
+
+
+#deleteIGs
+`%not_in%` <- purrr::negate(`%in%`)
+ANOVA_DF_clustering_F <- ANOVA_DF_clustering[colnames(ANOVA_DF_clustering) %not_in% results_ANOVA_V1_traj_sign_IG$IG]
+
+
+
+#keep V1
+ANOVA_DF_clustering_V1 <-  ANOVA_DF_clustering_F %>%  filter(event_type == "Visit 1")
+
+#copy data frame
+ANOVA_DF_clustering_V1_zscored <- ANOVA_DF_clustering_V1
+
+#only replace some columns
+ANOVA_DF_clustering_V1_zscored[20:77] <- as.data.frame(scale(ANOVA_DF_clustering_V1_zscored[20:77],center = TRUE,scale=TRUE))
+
+
+#heatMAP
+ANOVA_DF_clustering_V1_zscored <- ANOVA_DF_clustering_V1_zscored[order(ANOVA_DF_clustering_V1_zscored$trajectory_group),]
+
+ANOVA_DF_clustering_V1_zscored_t = as.data.frame(t(ANOVA_DF_clustering_V1_zscored))
+
+colnames(ANOVA_DF_clustering_V1_zscored_t) <- rownames(ANOVA_DF_clustering_V1_zscored)
+rownames(ANOVA_DF_clustering_V1_zscored_t) <- colnames(ANOVA_DF_clustering_V1_zscored)
+
+
+ANOVA_DF_clustering_V1_zscored_t_numeric <- ANOVA_DF_clustering_V1_zscored_t[20:nrow(ANOVA_DF_clustering_V1_zscored_t),]
+ANOVA_DF_clustering_V1_zscored_t_numeric <- mutate_all(ANOVA_DF_clustering_V1_zscored_t_numeric, function(x) as.numeric(as.character(x)))
+
+
+
+
+
+library(ComplexHeatmap)
+library(circlize)
+
+
+
+ANOVA_DF_clustering_V1_zscored_t = as.data.frame(t(ANOVA_DF_clustering_V1_zscored))
+colnames(ANOVA_DF_clustering_V1_zscored_t) <- rownames(ANOVA_DF_clustering_V1_zscored)
+rownames(ANOVA_DF_clustering_V1_zscored_t) <- colnames(ANOVA_DF_clustering_V1_zscored)
+
+ANOVA_DF_clustering_V1_zscored_t_numeric <- ANOVA_DF_clustering_V1_zscored_t[20:nrow(ANOVA_DF_clustering_V1_zscored_t),]
+ANOVA_DF_clustering_V1_zscored_t_numeric <- mutate_all(ANOVA_DF_clustering_V1_zscored_t_numeric, function(x) as.numeric(as.character(x)))
+
+proteins <- as.matrix(ANOVA_DF_clustering_V1_zscored_t_numeric)
+clinical <-as.matrix(ANOVA_DF_clustering_V1_zscored_t[c("trajectory_group","admit_age","Death","sex","symptom_date","respiratory_status"),])
+
+
+
+Annot_trajectorygroup <-  HeatmapAnnotation(trajectory_group=clinical["trajectory_group",],
+                                           col = list(trajectory_group = c("1" = "#ffeda0",
+                                                                            "2" = "#FEB24C",
+                                                                            "3" = "#FD8D3C",
+                                                                           "4"="#E31A1C",
+                                                                           "5"="#800026")))
+
+Annot_Resp_status <-  HeatmapAnnotation(respiratory_status=clinical["respiratory_status",],
+                                          col = list(respiratory_status = c(
+                                                                           "6" = "#7b3294",
+                                                                            "5" = "#c2a5cf",
+                                                                           "4"="#a6dba0",
+                                                                           "3"="#008837")))
+
+
+Annot_Age <- HeatmapAnnotation(age = anno_lines(as.numeric(clinical["admit_age",],size = unit(0.1, "mm"))))
+
+
+Annot_death <- HeatmapAnnotation(death = clinical["Death",],
+                                         col = list(death = c("TRUE" = "black", "FALSE" = "white")))
+
+Annot_sex <- HeatmapAnnotation(sex = clinical["sex",], col = list(sex = c("Female" = "#DC2543", "Male" = "#1E94A0")))
+
+
+
+#Annotlist <- c(Annot_trajectorygroup,Annot_Age,Annot_death,Annot_sex,Annot_Resp_status)
+Annotlist <- c(Annot_trajectorygroup)
+
+
+
+
+col_fun = colorRamp2(c(-1.5, 0, 1.5), c("blue", "white", "red"))
+col_fun(seq(-2,2))
+
+
+Heatmap(proteins, 
+        column_split = clinical["trajectory_group",],
+        top_annotation = Annotlist,
+        cluster_column_slices=FALSE,
+        na_col = "grey",
+        col = col_fun,
+        row_split = 3,
+        row_names_gp = grid::gpar(fontsize = 3),
+        column_names_gp = grid::gpar(fontsize = 0),
+        show_heatmap_legend = TRUE,
+          column_gap = unit(3, "mm"),
+        show_row_names = T,
+        show_column_names = F
+      )
+
+complexHeat <-Heatmap(proteins, 
+        column_split = clinical["trajectory_group",],
+        top_annotation = Annotlist,
+        cluster_column_slices=FALSE,
+        na_col = "grey",
+        col = col_fun,
+        row_split = 2,
+        row_names_gp = grid::gpar(fontsize = 7),
+        column_names_gp = grid::gpar(fontsize = 0),
+        show_heatmap_legend = TRUE,
+          column_gap = unit(2, "mm"),
+        show_row_names = T,
+        show_column_names = F,
+        use_raster = TRUE, 
+        raster_by_magick = TRUE
+      )
+
+
+
+
+
+```
+
+
+## KEGG
+
+```{r Plotting KEGG pathways}
+
+library(msigdbr)
+library(clusterProfiler)
+library(ggnewscale)
+#library(BiocManager)
+#BiocManager::install("clusterProfiler")
+#require(devtools)
+#install_version("rvcheck", version = "0.1.8", repos = "http://cran.us.r-project.org")
+#BiocManager::install("org.Hs.eg.db")
+library(org.Hs.eg.db)
+#remotes::install_github("YuLab-SMU/clusterProfiler") 
+
+
+
+
+ArthurDF_numeric <-  ArthurDF_withClinical_with_BMI %>% dplyr::select(-sample_type,-event_id,-phase,-event_date,-event_type,-event_location,-samples_collected,-respiratory_status,-participant_type,-enrollment_site,-admit_month,-admit_age,-sex,-race,-ethnicity,-pcr_date,-symptom_date,-trajectory_group,-respiratory_status_day14,-respiratory_status_day28,-phase1_2,-core_assay_cohort,-core_assay_comment,-bmi,-participant_id,-discretized_admit_age_quantile,-discretized_admit_age_equalWidth,-discharge_dates,-death_date,-age_group,-trajectory_group123_45,-trajectory_group1_23_45,-Symptom_Onset_time,-Death,-weight_classes)
+
+list_protein_background <-  names(ArthurDF_numeric %>% dplyr::select(-sample_id))
+list_protein_background_ENTREZID <- mapIds(org.Hs.eg.db, list_protein_background, 'ENTREZID', 'SYMBOL')
+universe <- list_protein_background_ENTREZID
+
+
+#cluster 1 KEGG
+
+# use mapIds method to obtain Entrez IDs
+C1_entrez <- mapIds(org.Hs.eg.db, c1, 'ENTREZID', 'SYMBOL')
+C1_entrez[!is.na(C1_entrez)]
+C1_entrezDF <- as.data.frame(C1_entrez)
+
+C1_entrez2 <- as.character(C1_entrez)
+Kegg_C1 <- enrichKEGG(gene = C1_entrez2,
+                        organism = "hsa",
+                        keyType = "kegg",
+                        pvalueCutoff = 0.05,
+                        pAdjustMethod = "BH",
+                        universe,
+                        use_internal_data = FALSE
+                        )
+  
+y <- setReadable(Kegg_C1, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+
+NetworkPlotKEGG_C1 <- cnetplot(y, cex_category = 2, cex_label_category = 1, cex_label_gene = 1,colorEdge = TRUE,showCategory = y@result[["Description"]][1:10][-2][-2][-2][-2][-2][-2][-2][-2]) +
+
+  scale_color_manual(values = c("#3B9AB2", "#F21A00")) +
+
+  theme(legend.position = "none")
+
+NetworkPlotKEGG_C1
+
+
+
+#Cluster2
+# use mapIds method to obtain Entrez IDs
+C2_entrez <- mapIds(org.Hs.eg.db, c2, 'ENTREZID', 'SYMBOL')
+Kegg_C2 <- enrichKEGG(gene = C2_entrez,
+                        organism = "hsa",
+                        keyType = "kegg",
+                        pvalueCutoff = 0.05,
+                        pAdjustMethod = "BH",
+                        universe,
+                        use_internal_data = FALSE
+)
+  
+y <- setReadable(Kegg_C2, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+
+NetworkPlotKEGG_C2 <- cnetplot(y, cex_category = 2, cex_label_category = 1, cex_label_gene =1,colorEdge = TRUE,showCategory = 3) +
+
+  scale_color_manual(values = c("#3B9AB2", "#F21A00")) +
+
+  theme(legend.position = "none")
+
+NetworkPlotKEGG_C2
+
+
+
+#Cluster 3
+
+# use mapIds method to obtain Entrez IDs
+C3_entrez <- mapIds(org.Hs.eg.db, c3, 'ENTREZID', 'SYMBOL')
+Kegg_C3 <- enrichKEGG(gene = C3_entrez,
+                        organism = "hsa",
+                        keyType = "kegg",
+                        pvalueCutoff = 0.05,
+                        pAdjustMethod = "BH",
+                        universe,
+                        use_internal_data = FALSE
+)
+y <- setReadable(Kegg_C3, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+
+NetworkPlotKEGG_C3 <- cnetplot(y, cex_category = 4, cex_label_category = 1, cex__label_gene = 1,colorEdge = TRUE,showCategory = y@result[["Description"]][1:4][-3]) +
+
+  scale_color_manual(values = c("#3B9AB2", "#F21A00")) +
+
+  theme(legend.position = "none")
+
+NetworkPlotKEGG_C3
+
+y@result[["Description"]]
+y@result[["p.adjust"]]
+
+
+
+#BiocManager::install("ReactomePA")
+library(ReactomePA)
+
+#module 1
+enrich_pathway_M1_results <- enrichPathway(
+  C1_entrez,
+  organism = "human",
+  pvalueCutoff = 0.05,
+  pAdjustMethod = "BH",
+  qvalueCutoff = 0.2,
+  universe,
+  minGSSize = 5,
+  maxGSSize = 500,
+  readable = TRUE
+)
+
+
+#get access to pathways
+enrich_pathway_M1_results$Description[1:60]
+
+NetworkPlot_reactome_M1<- cnetplot(enrich_pathway_M1_results,showCategory=enrich_pathway_M1_results$Description[48:59][-2][-2][-2][-2][-2][-2][-2][-2][-2][-2], cex_category = 2, cex_label_category = 1, cex_label_gene = 1,colorEdge = TRUE) +
+
+  scale_color_manual(values = c("#3B9AB2", "#F21A00")) +
+
+  theme(legend.position = "none")
+
+NetworkPlot_reactome_M1
+
+
+
+
+#module 2
+enrich_pathway_M2_results <- enrichPathway(
+  C2_entrez,
+  organism = "human",
+  pvalueCutoff = 0.05,
+  pAdjustMethod = "BH",
+  qvalueCutoff = 0.2,
+  universe,
+  minGSSize = 5,
+  maxGSSize = 500,
+  readable = TRUE
+)
+
+enrich_pathway_M2_results$Description[1:10]
+
+NetworkPlot_reactome_M2<- cnetplot(enrich_pathway_M2_results,showCategory=enrich_pathway_M2_results$Description[1:9][-2][-2][-3][-3][-4], cex_category = 2, cex_label_category = 1, cex_label_gene = 1,colorEdge = TRUE) +
+
+  scale_color_manual(values = c("#3B9AB2", "#F21A00")) +
+
+  theme(legend.position = "none")
+
+NetworkPlot_reactome_M2
+
+
+results_M2 <- data.frame(matrix(ncol=3,nrow=28, dimnames=list(NULL, c("Reactome_Pathway", "p.adjust","gene"))))
+
+results_M2$Reactome_Pathway <- enrich_pathway_M2_results$Description
+results_M2$p.adjust <- enrich_pathway_M2_results$p.adjust
+results_M2$gene <- enrich_pathway_M2_results$geneID
+
+
+Reactome_pathway_results_M2 <- results_M2 %>% filter(p.adjust <0.05)
+
+#module 3
+enrich_pathway_M3_results <- enrichPathway(
+  C3_entrez,
+  organism = "human",
+  pvalueCutoff = 0.05,
+  pAdjustMethod = "BH",
+  readable = TRUE
+)
+
+#get access to pathways
+enrich_pathway_M3_results$Description[1:20]
+
+
+
+NetworkPlot_reactome_M3<- cnetplot(enrich_pathway_M3_results, showCategory=enrich_pathway_M3_results$Description[1:4][-2][-2],cex_category = 2, cex_label_category = 1, cex_label_gene = 1,layout = "kk",colorEdge = TRUE) +
+
+  scale_color_manual(values = c("#3B9AB2", "#F21A00")) +
+
+  theme(legend.position = "none")
+
+NetworkPlot_reactome_M3
+
+results_M3 <- data.frame(matrix(ncol=3,nrow=32, dimnames=list(NULL, c("Reactome_Pathway", "p.adjust","gene"))))
+
+results_M3$Reactome_Pathway <- enrich_pathway_M3_results$Description
+results_M3$p.adjust <- enrich_pathway_M3_results$p.adjust
+results_M3$gene <- enrich_pathway_M3_results$geneID
+
+Reactome_pathway_results_M3 <- results_M3 %>% filter(p.adjust <0.05)
+
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+#LONGITUDINAL PLOTTING
+
+```{r}
+
+library(gamm4)
+#Give protein of interest
+
+
+
+#COMPLMENT and coagulation cascades KEGG PATHWAYx a
+#protein_interest <- c('CPB2','SERPIND1','PROCR','F9','VTN','TFPI','C3','C9','KLKB1','KNG1','SERPING1','C2','C3AR1','FGB','FGA','F2','PLG','C1QB','CLU','SERPINF2','A2M','SERPINA5','FGG','F8','CFHR2','CFHR3','CFH','SERPINC1','F5','MBL2','C1QC','C1QA','PROS1','CFI','CD59','C4A','C4B_2','SERPINA1','CFB','C1R')
+
+
+
+#nets
+#protein_interest <- c('H1.2',	'H1.3',	'H1.4',	'H1.5', 'H1.0',	'H2AC20',	'H2AC8',	'H2BC10',	'H2BC14',	'H2BC18',	'H2BC3',	'H2BC5','H2AC1','H2AZ1','H2BC13','H3C12','CTSG',	'LCN2',	'RNASE2',	'RPS27A',	'S100A11',	'S100A8',	'S100A9',	'VIM')
+
+
+
+#Degradation of the extracellular matrix
+#protein_interest <- c('CTSG','MMP2','COL1A1','KLKB1','COL6A3','COL1A2','COL14A1','CTRB2','COL3A1','BMP1','MMP14','PRSS1','PLG','A2M','FBN1','FN1','ELN','COL4A2','HSPG2','SPP1','CAST','CD44')
+
+
+#Dilated cardiomyopathy KEGG CLUSTER 1a
+#protein_interest <-  c('ACTG1','ACTB','TPM3','TPM1','MYH7','TPM4','ACTC1')
+
+
+#Cell adhesion molecules cluster KEGG aa
+
+#protein_interest <-  c("ICAM2","PVR","ICOSLG","SELL","SELP","ICAM3","NECTIN1","ICAM1","SELE")
+
+
+
+
+ 
+
+
+#Cholesterol metabolismKEGG cluster that one
+#protein_interest <-  c('APOH','APOC3','APOA1','APOE','APOA2','APOC1','APOA1')
+
+
+
+
+# cell adhesion molecules KEGG 
+#protein_interest <- c('ICAM3','SELL','SELP','NECTIN1','ICAM1','SELE','ICOSLG','PVR','ICAM2')
+
+
+
+#Formation of Fibrin Clot (Clotting Cascade)KEGG 
+#protein_interest <-  c("A2M","SERPIND1","KLKB1","GP1BA","F9","F10","F2","SERPING1","PROS1","FGG","FGB")
+
+#Complement cascadeKEGG 
+#protein_interest <-  c("F2","SERPING1","PROS1","CPB2","CFHR1","C9","VTN","CPN2","CFI","CFH","C1QA","C1S","CRP","C1QB","C1QC","C3","CFB","C2","MBL2")
+
+#Complement and coagulation cascade KEGG 
+protein_interest <-  c("F2","SERPING1","PROS1","CPB2","CFHR1","C9","VTN","CPN2","CFI","CFH","C1QA","C1S","CRP","C1QB","C1QC","C3","CFB","C2","MBL2","A2M","SERPIND1","KLKB1","GP1BA","F9","F10","FGG","FGB")
+
+
+
+
+#nets formation -> cluster
+#protein_interest <- c('H1.2',	'H1.3',	'H1.4',	'H1.5', 'H1.0',	'H2AC20',	'H2AC8',	'H2BC10',	'H2BC14',	'H2BC18',	'H2BC3',	'H2BC5','H2AC1','H2AZ1','H2BC13','H3C12','CTSG',"FGA","GP1BA","ACTB","ACTG1")
+
+
+
+#Scale (z-score)
+
+ArthurDF_withClinical_with_BMI_noNA_Traj <- ArthurDF_withClinical_with_BMI[!is.na(ArthurDF_withClinical_with_BMI$trajectory_group),]
+## prepare data frame
+ArthurDF_withClinical_with_BMI_noNA_Traj <- ArthurDF_withClinical_with_BMI_noNA_Traj[!is.na(ArthurDF_withClinical_with_BMI_noNA_Traj$event_date),]
+ArthurDF_withClinical_with_BMI_noNA_Traj <- ArthurDF_withClinical_with_BMI_noNA_Traj %>% filter(event_date > -1) %>% filter(event_date <40)
+
+ArthurDF_withClinical_rowname <-  ArthurDF_withClinical_with_BMI_noNA_Traj %>% remove_rownames %>% column_to_rownames(var="sample_id")
+
+
+ArthurDF_withClinical_long <-  ArthurDF_withClinical_rowname[36:2945]
+
+
+plasma_proteomics_global_dda_counts_zscored <- data.frame(scale(ArthurDF_withClinical_long))
+
+
+#Select quant ifo
+protein_interest_quant <- plasma_proteomics_global_dda_counts_zscored %>% dplyr::select(protein_interest)
+
+#Average the proteins of interest PER SAMPLE
+#ONLY KEEP THE AVERAGED ONE!!
+protein_interest_quant <- protein_interest_quant %>%
+  filter_all(any_vars(!is.na(.))) %>%
+  mutate(averagemodule = rowMeans(., na.rm = T)) %>%
+  dplyr::select(averagemodule) %>%
+  rownames_to_column()
+
+
+#remove NA in trajectory group
+ArthurDF_clinical_NoNA <- ArthurDF_withClinical_with_BMI_noNA_Traj[!is.na(ArthurDF_withClinical_with_BMI_noNA_Traj$trajectory_group),]
+ArthurDF_clinical_NoNA <- ArthurDF_clinical_NoNA[!is.na(ArthurDF_clinical_NoNA$event_date),]
+
+ArthurDF_clinical_NoNA2 <- ArthurDF_clinical_NoNA %>%  filter(event_date > -1) %>% filter(event_date <40)
+
+#COMBINE WITH CLIN DATA
+protein_interest_quant_clinical <- left_join(protein_interest_quant,
+                                             ArthurDF_clinical_NoNA2,
+                                             by =c("rowname" = "sample_id"))
+
+#Factorize some clinical factors
+protein_interest_quant_clinical$trajectory_group <- ordered(as.factor(protein_interest_quant_clinical$trajectory_group))
+protein_interest_quant_clinical$participant_id <- as.factor(protein_interest_quant_clinical$participant_id)
+
+#MAKE RESULTS FILE
+res_table =   data.frame(matrix(NA, ncol = 4, nrow = 1))
+colnames(res_table) = c("p.slope", "p.intercept","p.intercept.sex", "p.intercept.age.quantile")
+
+#CREATE FORMULA FOR LONGIT ANALYSIS
+formula_use = formula("averagemodule ~ s(event_date, bs = 'cr') +
+                             s(event_date, bs = 'cr', by = trajectory_group)  +
+                             trajectory_group + sex + discretized_admit_age_quantile")
+
+
+#RUN THE MODLEL!!!
+fit <- gamm4::gamm4(formula_use, data = protein_interest_quant_clinical, random = ~(1|enrollment_site/participant_id))
+
+#EXTRACT P VaLUES ALL MODEL
+a1 =anova(fit$gam)
+aa1 = sum(a1$s.table[-c(1), 3]*a1$s.table[-c(1), 2])
+aa2 = sum(a1$s.table[-c(1), 2])
+res_table[1,1]=pchisq(aa1,aa2, lower.tail = F)
+res_table[1,2] =a1$pTerms.pv[1]
+res_table[1,3] =a1$pTerms.pv[2] ## sex
+res_table[1,4] =a1$pTerms.pv[3] ##
+
+
+
+# #PAIRWISE ######################################
+#Get DF
+active_data <- protein_interest_quant_clinical
+
+#Determine ordinal grouping
+levels_encode = sort(unique(active_data[["trajectory_group"]]))
+
+#create X by x DF, make it into DF
+pairwise_comparisons <- combn( levels_encode, 2)
+compout = matrix(0, ncol = ncol( pairwise_comparisons), nrow = 4)
+
+#for loop over each pairwise comparison. Will fill compout. Copied from DAWG.
+#It filters for 2 possible groups, then runs ANOVA(?) between this to extract the required pvalues (i.e. also covariates)
+for(j in 1:ncol(pairwise_comparisons)){
+  print(j)
+  tmp_data = active_data[active_data[["trajectory_group"]]==pairwise_comparisons[1,j]|active_data[["trajectory_group"]]==pairwise_comparisons[2,j],]
+  tmp_data$participant_id = as.factor(tmp_data$participant_id )
+  tmp_data$enrollment_site = as.factor(tmp_data$enrollment_site )
+  tmp_data[["trajectory_group"]] = ordered(as.factor(as.character(tmp_data[["trajectory_group"]])), levels = c(as.character(pairwise_comparisons[1,j]), as.character(pairwise_comparisons[2,j])))
+  fit_pairwise <- try(gamm4::gamm4(formula_use, data = tmp_data, random = ~(1|enrollment_site/participant_id)))
+  a1 = anova(fit_pairwise$gam)
+  compout[2,j] = a1$pTerms.pv[1]
+  compout[1,j] = a1$s.table[2,4]
+  compout[3,j] = a1$pTerms.pv[2] #sex
+  compout[4,j] = a1$pTerms.pv[3] #discretized_admit_age_quantile
+  
+}
+
+#Give the pairwise results the proper naming.
+pairwise_comparisons = paste0(pairwise_comparisons[1, ], "v", pairwise_comparisons[2, ])
+colnames(compout) = pairwise_comparisons
+rownames(compout) = c("p.slope", "p.intercept", "p.intercept.sex", "p.intercept.age.quantile")
+
+#CREATE SIGNIFICANCE BARZ
+tmp.out <- compout
+
+#Gives names to each pvalue
+values.out <- c(tmp.out[1,], tmp.out[2,], tmp.out[3,], tmp.out[4,])
+        names(values.out) <- c(paste0(rownames(tmp.out)[1],"_", colnames(tmp.out[,1:ncol(tmp.out)])),
+                               paste0(rownames(tmp.out)[2],"_", colnames(tmp.out[,1:ncol(tmp.out)])),
+                               paste0(rownames(tmp.out)[3],"_", colnames(tmp.out[,1:ncol(tmp.out)])),
+                               paste0(rownames(tmp.out)[4],"_", colnames(tmp.out[,1:ncol(tmp.out)])))
+#tranpose
+values.out <- data.frame(t(data.frame(values.out)))
+rownames(values.out) <- 1
+
+#bind with ANOVA Pvalues
+significanceDF <- cbind(res_table, values.out)
+
+#Select only pairwise (Again.....)
+comps_loop <- significanceDF[,-1:-4]
+comps_loop <- pivot_longer(comps_loop, cols = 1:ncol(comps_loop), names_sep = "_", names_to = c("test", "comp"))
+
+#Create the DF with slope & intercept
+comps <- as.data.frame(paste(signif(comps_loop$value[comps_loop$test == "p.slope"],
+                                            digits = 2), "/", signif(comps_loop$value[comps_loop$test == "p.intercept"], digits = 2)))
+
+#Change row and colnames of the DF. Add columns with numbering
+colnames(comps) <- "p.value"
+rownames(comps) <- unique(comps_loop$comp)
+comps$group1 <- unlist(strsplit(rownames(comps), "v"))[c(TRUE, FALSE)]
+comps$group2 <- unlist(strsplit(rownames(comps), "v"))[c(FALSE, TRUE)]
+
+#Plot the SigBar
+comps$y_pos <- seq(from = 2, to = nrow(comps)*2, by = 2)
+
+
+#CREATE SIGNIF BAR
+
+#CREATE PLOTTING DF
+
+plotDF <- protein_interest_quant_clinical
+
+
+
+plotDF$yhat = predict(fit$mer)
+unique_plotDF <- dplyr::select(plotDF, c("event_date", "trajectory_group", "sex", "discretized_admit_age_quantile"))
+unique_plotDF <-  unique_plotDF %>% distinct()
+unique_plotDF$participant_id = 111
+unique_plotDF$yhat_wo_re <- rowSums(suppressWarnings(predict.gam(fit$gam,  unique_plotDF,
+                                                                 type="terms", exclude = c("sex", "discretized_admit_age_quantile")))) +
+                                                                attributes(suppressWarnings(predict.gam(fit$gam,  unique_plotDF,
+                                                                type="terms", exclude = c("sex", "discretized_admit_age_quantile"))))$constant
+unique_plotDF$participant_id  = NULL
+unique_plotDF$sex  = NULL
+unique_plotDF$discretized_admit_age_quantile  = NULL
+plotDF = merge(plotDF, unique_plotDF, by.x=c("event_date", "trajectory_group"), by.y=c("event_date", "trajectory_group"))
+
+#PLOT?
+
+trajectory_group_name <- c(
+                    "1" = "TG1",
+                    "2"= "TG2",
+                    "3" = "TG3",
+                    "4" = "TG4",
+                    "5" = "TG5"
+                    )
+
+
+lineplot <- plotDF %>% 
+  ggplot(mapping = aes(x = event_date, y = averagemodule)) +
+  geom_line(mapping = aes(group = participant_id, y = averagemodule), color ='gray', alpha = 0.4) +
+  #geom_line(mapping = aes(group = participant_id, y = yhat), alpha = 0.2, size = 2) +
+  geom_point(mapping = aes_string(color = "trajectory_group"), alpha = 0.7, size = 2) +
+  geom_line(mapping = aes_string(group = "trajectory_group", y = "yhat_wo_re"),alpha = 1, size = 2, color = "blue") +
+  #geom_vline(xintercept = knots, linetype = 2) +
+  facet_wrap(facets = ~get("trajectory_group"), nrow = 1,labeller = as_labeller(trajectory_group_name)) + 
+      theme_bw() + 
+  scale_color_manual(values = c("#ffeda0","#FEB24C","#FD8D3C","#E31A1C","#800026")) +
+    xlab("Hospitalization day")+ 
+    ylab(" Avg. normalized intensity") +
+  ylim(-2,2)+
+      #labs(y = unique(plotDF$name)) + 
+      theme(legend.pos = "none", text=element_text(size=25)) 
+
+#lineplot
+
+
+lineplot2 <- plotDF %>% 
+  ggplot(mapping = aes(x = event_date, y = averagemodule, colour=trajectory_group)) +
+  #geom_line(mapping = aes(group = participant_id, y = averagemodule), color ='gray', alpha = 0.4) +
+ # geom_line(mapping = aes(group = participant_id, y = yhat), alpha = 0.2, size = 2) +
+ geom_point(mapping = aes_string(color = "trajectory_group"), alpha = 0.7, size = 2) +
+  geom_line(mapping = aes_string(group = "trajectory_group", y = "yhat_wo_re"),alpha = 1, size = 2) +
+ # geom_vline(xintercept = knots, linetype = 2) +
+  facet_wrap(facets = ~get("trajectory_group"), nrow = 1,labeller = as_labeller(trajectory_group_name)) + 
+      theme_bw() + 
+  scale_color_manual(values = c("1"="#ffeda0","2"="#FEB24C","3"="#FD8D3C","4"="#E31A1C","5"="#800026")) +
+    xlab("Hospitalization day")+ 
+    ylab(" Avg. normalized intensity") +
+  ylim(-2,2)+
+      #labs(y = unique(plotDF$name)) + 
+      theme(legend.pos = "none", text=element_text(size=25)) 
+
+lineplot2 
+
+
+
+
+lineplot2 <- plotDF %>% 
+  ggplot(mapping = aes(x = event_date, y = averagemodule, colour=trajectory_group)) +
+  geom_line(mapping = aes(group = participant_id, y = averagemodule), color ='gray', alpha = 0.4) +
+ # geom_line(mapping = aes(group = participant_id, y = yhat), alpha = 0.2, size = 2) +
+ geom_point(mapping = aes_string(color = "trajectory_group"), alpha = 0.7, size = 2) +
+  geom_line(mapping = aes_string(group = "trajectory_group", y = "yhat_wo_re"),alpha = 1, size = 2,color ='black') +
+ # geom_vline(xintercept = knots, linetype = 2) +
+  facet_wrap(facets = ~get("trajectory_group"), nrow = 1,labeller = as_labeller(trajectory_group_name)) + 
+      theme_bw() + 
+  scale_color_manual(values = c("1"="#ffeda0","2"="#FEB24C","3"="#FD8D3C","4"="#E31A1C","5"="#800026")) +
+    xlab("Hospitalization day")+ 
+    ylab(" Avg. normalized intensity") +
+  ylim(-2,2)+
+      #labs(y = unique(plotDF$name)) + 
+      theme(legend.pos = "none", text=element_text(size=20)) +
+   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+
+lineplot2 
+
+
+
+
+
+```
+
+#PAired t-test for compare cluster
+
+##TG5 First vs last samples
+
+```{r Trajectory group 5 First vs last samples}
+DeathV1AndLast <- 
+  ArthurDF_withClinical_with_BMI %>% 
+  dplyr::filter(trajectory_group == 5) %>% #Select only Death
+  group_by(participant_id) %>% #Do next steps PER participant ID
+  filter(event_date == min(event_date) | event_date == max(event_date)) %>% #filter for minimum and maximum event_dates. This should be the first and last
+  filter(n()>1) %>% #Some participants died straight away and have only 1 visit. Filter those out if you wanna do pairwise stats. 
+  # count(participant_id) #Line just to check number of samples participant ID
+  ungroup() #Ungroup so it does not affect any downstream analysis
+
+#NOTE: Participant 003-0046 did have two escalation event_type before dying. This person therefore has 3 samples.
+#NOTE:Participant 015-0022 has two escalation event + a visit 4 before dying. This person therefore has 4 samples.
+#NOTE:Participant003-0046
+DeathV1AndLast <-  DeathV1AndLast[!grepl("0865-004FVC00-005", DeathV1AndLast$sample_id),]
+DeathV1AndLast <-  DeathV1AndLast[!grepl("0865-008NVC00-006", DeathV1AndLast$sample_id),]
+DeathV1AndLast <-  DeathV1AndLast[!grepl("0865-008TYE00-005", DeathV1AndLast$sample_id),]
+DeathV1AndLast <-  DeathV1AndLast[!grepl("0865-004FVC00-005", DeathV1AndLast$sample_id),]
+
+
+DeathV1AndLast_test <- DeathV1AndLast %>% dplyr::select(-sample_id,-sample_type,-phase,-event_location,-samples_collected,participant_type,-enrollment_site,-admit_month,-admit_age,-sex,-race,-pcr_date,-symptom_date,-phase1_2,-core_assay_cohort,-core_assay_comment,-discretized_admit_age_quantile,discretized_admit_age_equalWidth,-participant_type,-ethnicity)
+
+
+
+#create new column for group
+DeathV1AndLast_test <- DeathV1AndLast_test %>% group_by(participant_id) %>% mutate(group_First_last = case_when(
+  
+ event_date == min(event_date)~ "first",
+ event_date == max(event_date) ~"last"
+))
+
+#move column group_First_last in first position
+DeathV1AndLast_test <- DeathV1AndLast_test %>% dplyr::select("group_First_last", everything())
+
+
+#copy the data, use 50% cut off filter.
+DeathV1AndLast_test <- DeathV1AndLast_test %>% purrr::discard(~sum(is.na(.x))/length(.x)* 100 >=50)
+
+#order samples
+DeathV1AndLast_test <- DeathV1AndLast_test[order(DeathV1AndLast_test$group_First_last),]
+DeathV1AndLast_test <- DeathV1AndLast_test[order(DeathV1AndLast_test$participant_id),]
+
+#take only proteins
+test <- colnames(DeathV1AndLast_test)[20:ncol(DeathV1AndLast_test)]
+
+#ANOVA long format
+t_test_LONG <- DeathV1AndLast_test %>% gather(test, key = "protein",value = "Intensity")
+t_test_LONG$Intensity <- as.numeric(t_test_LONG$Intensity)
+t_test_LONG$group_First_last <- as.factor(t_test_LONG$group_First_last)
+t_test_LONG$protein <- as.factor(t_test_LONG$protein)
+t_test_LONG$event_type <- as.factor(t_test_LONG$event_type)
+
+t_test_LONG <- t_test_LONG[order(t_test_LONG$group_First_last),]
+
+
+restuls_paired_t_test_first_last <- t_test_LONG %>%
+  #drop_na(Intensity) %>%
+  group_by(protein) %>%
+  t_test(Intensity ~ group_First_last,paired=TRUE,detailed=T)
+
+
+
+#adjusted p-value BJ = benjamini-hochberg
+
+restuls_paired_t_test_first_last$Padjusted <- p.adjust(restuls_paired_t_test_first_last$p, method = "BH")
+restuls_paired_t_test_first_last$negPadjusted <-  -log10(restuls_paired_t_test_first_last$Padjusted)
+restuls_paired_t_test_first_last <-restuls_paired_t_test_first_last %>% mutate(Significant = case_when(
+  
+ Padjusted < 0.05 ~ "Significant",
+ Padjusted >= "0.05" ~"Not_sign"
+))
+
+
+restuls_paired_t_test_first_last_change <- restuls_paired_t_test_first_last
+restuls_paired_t_test_first_last_change$estimate <- restuls_paired_t_test_first_last_change$estimate*(-1)
+
+Plot_paired_ttest_trajectory_group5_first_last <- ggplot(restuls_paired_t_test_first_last2, aes(x=as.numeric(estimate), y=as.numeric(negPadjusted),label=protein)) + geom_point(aes(fill=Significant),size = 3, alpha = 4) + labs(x= " Fold change", y= "-log10(p-value)", title = "trajectory group 5", colour= " significant proteins") + scale_fill_manual(values=c("Grey50", "gold2")) + theme_classic() + theme(axis.title.x = element_text(colour="black", size=22 ,face="bold"),axis.title.y = element_text(colour="black", size=22 ,face="bold"), axis.text=element_text(colour="black",size=22, face="bold"),legend.position = "none")  + geom_hline(yintercept=1.3, linetype="dashed", color = "coral2",size=1)
+
+ggplotly(Plot_paired_ttest_trajectory_group5_first_last)
+
+
+results_up_last <- restuls_paired_t_test_first_last %>% filter(Significant=="Significant")%>% filter(estimate<0)
+write.csv(results_up_last$protein)
+results_up_first <- restuls_paired_t_test_first_last %>% filter(Significant=="Significant")%>% filter(estimate>0)
+write.csv(results_up_first$protein)
+
+
+
+#convert gene names to ENTREZ
+Protein_background_list <- names(ArthurDF_numeric %>% dplyr::select(-sample_id))
+Protein_background_list_entrez <- mapIds(org.Hs.eg.db, Protein_background_list, 'ENTREZID', 'SYMBOL')
+Protein_background_list_entrez_df  <- as.data.frame(Protein_background_list_entrez)
+
+Protein_background_list_entrez_df_RN <-  Protein_background_list_entrez_df %>% rownames_to_column()
+colnames(Protein_background_list_entrez_df_RN) <- c("protein","Entrez_id")
+
+
+results_up_first_entrez <- left_join(results_up_first,Protein_background_list_entrez_df_RN,by=c("protein"))
+
+results_up_first_entrez$Entrez_id
+  
+  
+
+
+restuls_paired_t_test_first_last$Padjusted <- p.adjust(restuls_paired_t_test_first_last$p, method = "BH")
+restuls_paired_t_test_first_last$negPadjusted <-  -log10(restuls_paired_t_test_first_last$Padjusted)
+restuls_paired_t_test_first_last <-restuls_paired_t_test_first_last %>% mutate(Significant = case_when(
+  
+ Padjusted < 0.05 ~ "Significant",
+ Padjusted >= "0.05" ~"Not_sign"
+))
+
+
+
+
+
+ #Determine if up or down regulated
+ restuls_paired_t_test_first_last2 <- restuls_paired_t_test_first_last%>%  mutate(Direction = ifelse(Padjusted > 0.05, "NotSignificant", ifelse(estimate < 0, "Down", "Up")))
+
+#Results_ttest_wk1_CB_sign <- Results_ttest_wk1_group %>% filter(Results_ttest_wk1_group$negPadjusted>=1.3)
+
+
+
+a <- ggplot(restuls_paired_t_test_first_last2, aes(x = as.numeric(-estimate), y = as.numeric(negPadjusted))) +
+  geom_point(aes(fill = Direction),size = 5,pch=21) +
+    scale_fill_manual(values = c("turquoise", "grey60","#7FBC41")) +
+  geom_hline(yintercept=1.3, linetype="dashed", color = "black",size=1) +
+   xlab("FC last vs. first time point collected TG5")+
+  ylab("-log10(p-value)")+
+   theme_light(base_size = 22) +
+  theme(
+    legend.position = "none",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank())
+
+
+
+```
+
+
+##TG3 first last
+```{r trajectory group 3}
+
+
+Survivors3_V1AndLast <- 
+  ArthurDF_withClinical_with_BMI %>% 
+  dplyr::filter(trajectory_group == 3) %>% #Select trajectory group 1,2,3
+  group_by(participant_id) %>% #Do next steps PER participant ID
+  filter(event_date == min(event_date) | event_date == max(event_date)) %>% #filter for minimum and maximum event_dates. This should be the first and last
+  filter(n()>1) %>% #Some participants died straight away and have only 1 visit. Filter those out if you wanna do pairwise stats. 
+  # count(participant_id) #Line just to check number of samples participant ID
+  ungroup() #Ungroup so it does not affect any downstream analysis
+
+#NOTE: Participant 015-0015-1 did have two visit 1 event_type before dying. This person therefore has 3 samples.
+# 015-0014 only 2 first visits 
+Survivors3_V1AndLast <-  Survivors3_V1AndLast[!grepl("0865-0071JJ00-006", Survivors3_V1AndLast$sample_id),]
+Survivors3_V1AndLast <- Survivors3_V1AndLast[!grepl("0865-0071FH00-005", Survivors3_V1AndLast$sample_id),]
+Survivors3_V1AndLast <- Survivors3_V1AndLast[!grepl("0865-0071FH00-006", Survivors3_V1AndLast$sample_id),]
+
+Survivors3_V1AndLast_test <- Survivors3_V1AndLast %>% dplyr::select(-sample_id,-sample_type,-phase,-event_location,-samples_collected,participant_type,-enrollment_site,-admit_month,-admit_age,-sex,-race,-pcr_date,-symptom_date,-phase1_2,-core_assay_cohort,-core_assay_comment,-discretized_admit_age_quantile,discretized_admit_age_equalWidth,-participant_type,-ethnicity)
+
+
+
+#create new column for group
+Survivors3_V1AndLast_test <- Survivors3_V1AndLast_test %>% group_by(participant_id) %>% mutate(group_First_last = case_when(
+  
+ event_date == min(event_date)~ "first",
+ event_date == max(event_date) ~"last"
+))
+
+#move column group_First_last in first position
+Survivors3_V1AndLast_test <- Survivors3_V1AndLast_test %>% dplyr::select("group_First_last", everything())
+
+
+#copy the data, use 50% cut off filter.
+Survivors3_V1AndLast_test <- Survivors3_V1AndLast_test %>% purrr::discard(~sum(is.na(.x))/length(.x)* 100 >=50)
+
+#order samples
+Survivors3_V1AndLast_test <- Survivors3_V1AndLast_test[order(Survivors3_V1AndLast_test$group_First_last),]
+Survivors3_V1AndLast_test <- Survivors3_V1AndLast_test[order(Survivors3_V1AndLast_test$participant_id),]
+
+#take only proteins
+test <- colnames(Survivors3_V1AndLast_test)[20:ncol(Survivors3_V1AndLast_test)]
+
+#ANOVA long format
+t_test_LONG <- Survivors3_V1AndLast_test %>% gather(test, key = "protein",value = "Intensity")
+t_test_LONG$Intensity <- as.numeric(t_test_LONG$Intensity)
+t_test_LONG$group_First_last <- as.factor(t_test_LONG$group_First_last)
+t_test_LONG$protein <- as.factor(t_test_LONG$protein)
+t_test_LONG$event_type <- as.factor(t_test_LONG$event_type)
+
+t_test_LONG <- t_test_LONG[order(t_test_LONG$group_First_last),]
+
+
+restuls_paired_t_test_first_last <- t_test_LONG %>%
+  #drop_na(Intensity) %>%
+  group_by(protein) %>%
+  t_test(Intensity ~ group_First_last,paired=TRUE,detailed=T)
+
+
+
+#adjusted p-value BJ = benjamini-hochberg
+
+restuls_paired_t_test_first_last$Padjusted <- p.adjust(restuls_paired_t_test_first_last$p, method = "BH")
+restuls_paired_t_test_first_last$negPadjusted <-  -log10(restuls_paired_t_test_first_last$Padjusted)
+restuls_paired_t_test_first_last <-restuls_paired_t_test_first_last %>% mutate(Significant = case_when(
+  
+ Padjusted < 0.05 ~ "Significant",
+ Padjusted >= "0.05" ~"Not_sign"
+))
+
+Plot_paired_ttest_trajectory_group123_first_last <- ggplot(restuls_paired_t_test_first_last, aes(x=as.numeric(estimate), y=as.numeric(negPadjusted),label=protein)) + geom_point(aes(fill=Significant),size = 3, alpha = 4) + labs(x= " Fold change trajectory first vs. last ", y= "-log10(p-value)", title = "trajectory group 123", colour= " significant proteins") + scale_fill_manual(values=c("Grey50", "gold2")) + theme_classic() + theme(axis.title.x = element_text(colour="black", size=22 ,face="bold"),axis.title.y = element_text(colour="black", size=22 ,face="bold"), axis.text=element_text(colour="black",size=22, face="bold"),legend.position = "none")  + geom_hline(yintercept=1.3, linetype="dashed", color = "coral2",size=1)
+
+ggplotly(Plot_paired_ttest_trajectory_group123_first_last)
+
+results_up_last <- restuls_paired_t_test_first_last %>% filter(Significant=="Significant")%>% filter(estimate<0)
+write.csv(results_up_last$protein)
+results_up_first <- restuls_paired_t_test_first_last %>% filter(Significant=="Significant")%>% filter(estimate>0)
+write.csv(results_up_first$protein)
+
+
+results_up_first_entrez <- left_join(results_up_first,Protein_background_list_entrez_df_RN,by=c("protein"))
+
+results_up_first_entrez$Entrez_id
+
+
+
+```
+
+### TG2 first last
+```{r trajectory group 2}
+
+Survivors2_V1AndLast <- 
+  ArthurDF_withClinical_with_BMI %>% 
+  dplyr::filter(trajectory_group == 2) %>% #Select trajectory group 1,2,3
+  group_by(participant_id) %>% #Do next steps PER participant ID
+  filter(event_date == min(event_date) | event_date == max(event_date)) %>% #filter for minimum and maximum event_dates. This should be the first and last
+  filter(n()>1) %>% #Some participants died straight away and have only 1 visit. Filter those out if you wanna do pairwise stats. 
+  # count(participant_id) #Line just to check number of samples participant ID
+  ungroup() #Ungroup so it does not affect any downstream analysis
+
+#NOTE: Participant 007-0070 did have two visit 1 event_type before dying. Same event date 0865-007G2F00-004
+
+Survivors2_V1AndLast <-  Survivors2_V1AndLast[!grepl("0865-0077PG00-005", Survivors2_V1AndLast$sample_id),]
+Survivors2_V1AndLast <-  Survivors2_V1AndLast[!grepl("0865-007G2F00-004", Survivors2_V1AndLast$sample_id),]
+
+
+Survivors2_V1AndLast_test <- Survivors2_V1AndLast %>% dplyr::select(-sample_id,-sample_type,-phase,-event_location,-samples_collected,participant_type,-enrollment_site,-admit_month,-admit_age,-sex,-race,-pcr_date,-symptom_date,-phase1_2,-core_assay_cohort,-core_assay_comment,-discretized_admit_age_quantile,discretized_admit_age_equalWidth,-participant_type,-ethnicity)
+
+
+
+#create new column for group
+Survivors2_V1AndLast_test <- Survivors2_V1AndLast_test %>% group_by(participant_id) %>% mutate(group_First_last = case_when(
+  
+ event_date == min(event_date)~ "first",
+ event_date == max(event_date) ~"last"
+))
+
+#move column group_First_last in first position
+Survivors2_V1AndLast_test <- Survivors2_V1AndLast_test %>% dplyr::select("group_First_last", everything())
+
+
+#copy the data, use 50% cut off filter.
+Survivors2_V1AndLast_test <- Survivors2_V1AndLast_test %>% purrr::discard(~sum(is.na(.x))/length(.x)* 100 >=50)
+
+#order samples
+Survivors2_V1AndLast_test <- Survivors2_V1AndLast_test[order(Survivors2_V1AndLast_test$group_First_last),]
+Survivors2_V1AndLast_test <- Survivors2_V1AndLast_test[order(Survivors2_V1AndLast_test$participant_id),]
+
+#take only proteins
+test <- colnames(Survivors2_V1AndLast_test)[20:ncol(Survivors2_V1AndLast_test)]
+
+#ANOVA long format
+t_test_LONG <- Survivors2_V1AndLast_test %>% gather(test, key = "protein",value = "Intensity")
+t_test_LONG$Intensity <- as.numeric(t_test_LONG$Intensity)
+t_test_LONG$group_First_last <- as.factor(t_test_LONG$group_First_last)
+t_test_LONG$protein <- as.factor(t_test_LONG$protein)
+t_test_LONG$event_type <- as.factor(t_test_LONG$event_type)
+
+t_test_LONG <- t_test_LONG[order(t_test_LONG$group_First_last),]
+
+
+restuls_paired_t_test_first_last <- t_test_LONG %>%
+  #drop_na(Intensity) %>%
+  group_by(protein) %>%
+  t_test(Intensity ~ group_First_last,paired=TRUE,detailed=T)
+
+
+
+#adjusted p-value BJ = benjamini-hochberg
+
+restuls_paired_t_test_first_last$Padjusted <- p.adjust(restuls_paired_t_test_first_last$p, method = "BH")
+restuls_paired_t_test_first_last$negPadjusted <-  -log10(restuls_paired_t_test_first_last$Padjusted)
+restuls_paired_t_test_first_last <-restuls_paired_t_test_first_last %>% mutate(Significant = case_when(
+  
+ Padjusted < 0.05 ~ "Significant",
+ Padjusted >= "0.05" ~"Not_sign"
+))
+
+Plot_paired_ttest_trajectory_group123_first_last <- ggplot(restuls_paired_t_test_first_last, aes(x=as.numeric(estimate), y=as.numeric(negPadjusted),label=protein)) + geom_point(aes(fill=Significant),size = 3, alpha = 4) + labs(x= " Fold change trajectory first vs. last ", y= "-log10(p-value)", title = "trajectory group 123", colour= " significant proteins") + scale_fill_manual(values=c("Grey50", "gold2")) + theme_classic() + theme(axis.title.x = element_text(colour="black", size=22 ,face="bold"),axis.title.y = element_text(colour="black", size=22 ,face="bold"), axis.text=element_text(colour="black",size=22, face="bold"),legend.position = "none")  + geom_hline(yintercept=1.3, linetype="dashed", color = "coral2",size=1)
+
+ggplotly(Plot_paired_ttest_trajectory_group123_first_last)
+
+results_up_last <- restuls_paired_t_test_first_last %>% filter(Significant=="Significant")%>% filter(estimate<0)
+write.csv(results_up_last$protein)
+results_up_first <- restuls_paired_t_test_first_last %>% filter(Significant=="Significant")%>% filter(estimate>0)
+write.csv(results_up_first$protein)
+
+results_entrez <- left_join(results_up_first,Protein_background_list_entrez_df_RN,by=c("protein"))
+
+results_entrez$Entrez_id
+
+
+```
+
+##TG4-S
+
+```{r trajectory group 4 survivors}
+
+Survivors4_V1AndLast <- 
+  ArthurDF_withClinical_with_BMI %>% 
+  dplyr::filter(trajectory_group == 4) %>% #Select trajectory group 4
+  dplyr::filter(Death == "FALSE") %>% #Select survivors
+  group_by(participant_id) %>% #Do next steps PER participant ID
+  filter(event_date == min(event_date) | event_date == max(event_date)) %>% #filter for minimum and maximum event_dates. This should be the first and last
+  filter(n()>1) %>% #Some participants died straight away and have only 1 visit. Filter those out if you wanna do pairwise stats. 
+  # count(participant_id) #Line just to check number of samples participant ID
+  ungroup() #Ungroup so it does not affect any downstream analysis
+
+#NOTE: Participant 	009-3033 did have two escalation event_type before dying. This person therefore has 3 samples.
+#NOTE: Participant 	009-3081 did have two escalation event_type before dying. This person therefore has 3 samples.
+#NOTE: Participant 	009-4046 did have two escalation event_type before dying. This person therefore has 3 samples
+#NOTE: Participant009-4051-21
+
+
+Survivors4_V1AndLast <-  Survivors4_V1AndLast[!grepl("0865-0030WA00-003", Survivors4_V1AndLast$sample_id),]
+Survivors4_V1AndLast <-  Survivors4_V1AndLast[!grepl("0865-004K4G00-004", Survivors4_V1AndLast$sample_id),]
+Survivors4_V1AndLast <-  Survivors4_V1AndLast[!grepl("0865-004JPH00-004", Survivors4_V1AndLast$sample_id),]
+Survivors4_V1AndLast <-  Survivors4_V1AndLast[!grepl("0865-004JTJ00-004", Survivors4_V1AndLast$sample_id),]
+
+
+
+
+
+
+Survivors4_V1AndLast_test <- Survivors4_V1AndLast %>% dplyr::select(-sample_id,-sample_type,-phase,-event_location,-samples_collected,participant_type,-enrollment_site,-admit_month,-admit_age,-sex,-race,-pcr_date,-symptom_date,-phase1_2,-core_assay_cohort,-core_assay_comment,-discretized_admit_age_quantile,discretized_admit_age_equalWidth,-participant_type,-ethnicity)
+
+
+
+#create new column for group
+Survivors4_V1AndLast_test <- Survivors4_V1AndLast_test %>% group_by(participant_id) %>% mutate(group_First_last = case_when(
+  
+ event_date == min(event_date)~ "first",
+ event_date == max(event_date) ~"last"
+))
+
+#move column group_First_last in first position
+Survivors4_V1AndLast_test <- Survivors4_V1AndLast_test %>% dplyr::select("group_First_last", everything())
+
+
+#copy the data, use 50% cut off filter.
+Survivors4_V1AndLast_test <- Survivors4_V1AndLast_test %>% purrr::discard(~sum(is.na(.x))/length(.x)* 100 >=70)
+
+#order samples
+Survivors4_V1AndLast_test <- Survivors4_V1AndLast_test[order(Survivors4_V1AndLast_test$group_First_last),]
+Survivors4_V1AndLast_test <- Survivors4_V1AndLast_test[order(Survivors4_V1AndLast_test$participant_id),]
+
+#take only proteins
+test <- colnames(Survivors4_V1AndLast_test)[20:ncol(Survivors4_V1AndLast_test)]
+
+#ANOVA long format
+t_test_LONG <- Survivors4_V1AndLast_test %>% gather(test, key = "protein",value = "Intensity")
+t_test_LONG$Intensity <- as.numeric(t_test_LONG$Intensity)
+t_test_LONG$group_First_last <- as.factor(t_test_LONG$group_First_last)
+t_test_LONG$protein <- as.factor(t_test_LONG$protein)
+t_test_LONG$event_type <- as.factor(t_test_LONG$event_type)
+
+t_test_LONG <- t_test_LONG[order(t_test_LONG$group_First_last),]
+
+
+restuls_paired_t_test_first_last <- t_test_LONG %>%
+  #drop_na(Intensity) %>%
+  group_by(protein) %>%
+  t_test(Intensity ~ group_First_last,paired=TRUE,detailed=T)
+
+
+
+#adjusted p-value BJ = benjamini-hochberg
+
+restuls_paired_t_test_first_last$Padjusted <- p.adjust(restuls_paired_t_test_first_last$p, method = "BH")
+restuls_paired_t_test_first_last$negPadjusted <-  -log10(restuls_paired_t_test_first_last$Padjusted)
+restuls_paired_t_test_first_last <-restuls_paired_t_test_first_last %>% mutate(Significant = case_when(
+  
+ Padjusted < 0.05 ~ "Significant",
+ Padjusted >= "0.05" ~"Not_sign"
+))
+
+Plot_paired_ttest_trajectory_group4_first_last <- ggplot(restuls_paired_t_test_first_last, aes(x=as.numeric(estimate), y=as.numeric(negPadjusted),label=protein)) + geom_point(aes(fill=Significant),size = 3, alpha = 4) + labs(x= " Fold change trajectory first vs. last ", y= "-log10(p-value)", title = "trajectory group 4 survivors", colour= " significant proteins") + scale_fill_manual(values=c("Grey50", "gold2")) + theme_classic() + theme(axis.title.x = element_text(colour="black", size=22 ,face="bold"),axis.title.y = element_text(colour="black", size=22 ,face="bold"), axis.text=element_text(colour="black",size=22, face="bold"),legend.position = "none")  + geom_hline(yintercept=1.3, linetype="dashed", color = "coral2",size=1)
+
+ggplotly(Plot_paired_ttest_trajectory_group4_first_last)
+
+
+results_up_last <- restuls_paired_t_test_first_last %>% filter(Significant=="Significant")%>% filter(estimate<0)
+write.csv(results_up_last$protein)
+results_up_first <- restuls_paired_t_test_first_last %>% filter(Significant=="Significant")%>% filter(estimate>0)
+write.csv(results_up_first$protein)
+
+
+results_entrez <- left_join(results_up_first,Protein_background_list_entrez_df_RN,by=c("protein"))
+
+results_entrez$Entrez_id
+
+
+
+
+
+```
+
+
+##TG4-F
+```{r trajectory 4 fatalities}
+
+Fatalities4_V1AndLast <- 
+  ArthurDF_withClinical_with_BMI %>% 
+  dplyr::filter(trajectory_group == 4) %>% #Select trajectory group 4
+  dplyr::filter(Death == "TRUE") %>% #Select survivors
+  group_by(participant_id) %>% #Do next steps PER participant ID
+  filter(event_date == min(event_date) | event_date == max(event_date)) %>% #filter for minimum and maximum event_dates. This should be the first and last
+  filter(n()>1) %>% #Some participants died straight away and have only 1 visit. Filter those out if you wanna do pairwise stats. 
+  # count(participant_id) #Line just to check number of samples participant ID
+  ungroup() #Ungroup so it does not affect any downstream analysis
+
+#NOTE: Participant 	009-3033 did have two escalation event_type before dying. This person therefore has 3 samples.
+#NOTE: Participant 	009-3081 did have two escalation event_type before dying. This person therefore has 3 samples.
+#NOTE: Participant 	009-4046 did have two escalation event_type before dying. This person therefore has 3 samples
+
+
+
+Fatalities4_V1AndLast_test <- Fatalities4_V1AndLast %>% dplyr::select(-sample_id,-sample_type,-phase,-event_location,-samples_collected,participant_type,-enrollment_site,-admit_month,-admit_age,-sex,-race,-pcr_date,-symptom_date,-phase1_2,-core_assay_cohort,-core_assay_comment,-discretized_admit_age_quantile,discretized_admit_age_equalWidth,-participant_type,-ethnicity)
+
+
+
+#create new column for group
+Fatalities4_V1AndLast_test <- Fatalities4_V1AndLast_test %>% group_by(participant_id) %>% mutate(group_First_last = case_when(
+  
+ event_date == min(event_date)~ "first",
+ event_date == max(event_date) ~"last"
+))
+
+#move column group_First_last in first position
+Fatalities4_V1AndLast_test <- Fatalities4_V1AndLast_test %>% dplyr::select("group_First_last", everything())
+
+
+#copy the data, use 50% cut off filter.
+Fatalities4_V1AndLast_test <- Fatalities4_V1AndLast_test %>% purrr::discard(~sum(is.na(.x))/length(.x)* 100 >=50)
+
+#order samples
+Fatalities4_V1AndLast_test <- Fatalities4_V1AndLast_test[order(Fatalities4_V1AndLast_test$group_First_last),]
+Fatalities4_V1AndLast_test <- Fatalities4_V1AndLast_test[order(Fatalities4_V1AndLast_test$participant_id),]
+
+#take only proteins
+test <- colnames(Fatalities4_V1AndLast_test)[20:ncol(Fatalities4_V1AndLast_test)]
+
+#ANOVA long format
+t_test_LONG <- Fatalities4_V1AndLast_test %>% gather(test, key = "protein",value = "Intensity")
+t_test_LONG$Intensity <- as.numeric(t_test_LONG$Intensity)
+t_test_LONG$group_First_last <- as.factor(t_test_LONG$group_First_last)
+t_test_LONG$protein <- as.factor(t_test_LONG$protein)
+t_test_LONG$event_type <- as.factor(t_test_LONG$event_type)
+
+t_test_LONG <- t_test_LONG[order(t_test_LONG$group_First_last),]
+
+
+restuls_paired_t_test_first_last <- t_test_LONG %>%
+  #drop_na(Intensity) %>%
+  group_by(protein) %>%
+  t_test(Intensity ~ group_First_last,paired=TRUE,detailed=T)
+
+
+
+#adjusted p-value BJ = benjamini-hochberg
+
+#restuls_paired_t_test_first_last$Padjusted <- p.adjust(restuls_paired_t_test_first_last$p, method = "BH")
+restuls_paired_t_test_first_last$negPadjusted <-  -log10(restuls_paired_t_test_first_last$p)
+restuls_paired_t_test_first_last <-restuls_paired_t_test_first_last %>% mutate(Significant = case_when(
+  
+ p < 0.05 ~ "Significant",
+ p >= "0.05" ~"Not_sign"
+))
+
+Plot_paired_ttest_trajectory_group4_fatalities_first_last <- ggplot(restuls_paired_t_test_first_last, aes(x=as.numeric(estimate), y=as.numeric(negPadjusted),label=protein)) + geom_point(aes(fill=Significant),size = 3, alpha = 4) + labs(x= " Fold change trajectory first vs. last ", y= "-log10(p-value)", title = "trajectory group 4 fatalities", colour= " significant proteins") + scale_fill_manual(values=c("Grey50", "gold2")) + theme_classic() + theme(axis.title.x = element_text(colour="black", size=22 ,face="bold"),axis.title.y = element_text(colour="black", size=22 ,face="bold"), axis.text=element_text(colour="black",size=22, face="bold"),legend.position = "none")  + geom_hline(yintercept=1.3, linetype="dashed", color = "coral2",size=1)
+
+ggplotly(Plot_paired_ttest_trajectory_group4_fatalities_first_last)
+
+
+results_up_last <- restuls_paired_t_test_first_last %>% filter(Significant=="Significant")%>% filter(estimate<0)
+write.csv(results_up_last$protein)
+results_up_first <- restuls_paired_t_test_first_last %>% filter(Significant=="Significant")%>% filter(estimate>0)
+write.csv(results_up_first$protein)
+
+
+results_entrez <- left_join(results_up_last,Protein_background_list_entrez_df_RN,by=c("protein"))
+
+results_entrez$Entrez_id
+
+```
+
+
+
+##COMPARE CLUSTER
+```{r}
+
+
+library(msigdbr)
+library(clusterProfiler)
+library(ggnewscale)
+library(org.Hs.eg.db)
+
+
+#data frame NCAP
+First_vs_last_DF <- read_csv("C:/Users/CH209897/Dropbox (BCH)/Data Exchange Kinga-AV/IMPACC/Analysis/Death/First_last_entrez_ID.csv")
+
+
+xx <- compareCluster(Entrez ~Trajectory_group+up_down_regulation,
+data=First_vs_last_DF, fun = enrichKEGG)
+
+
+## downloaded from https://wikipathways-data.wmcloud.org/current/gmt/
+#gmt <- 'wikipathways-20210310-gmt-Homo_sapiens.gmt'
+#wp <- read.gmt.wp(gmt)
+#data(DE_GSE8057)
+#xx <- compareCluster(Gene~time+treatment, data=DE_GSE8057, fun = enricher,
+#TERM2GENE=wp[,c("wpid", "gene")], TERM2NAME=wp[,c("wpid", "name")])
+
+
+#create output and threshold
+myfavourite_enrichment <- data.frame(xx@compareClusterResult)
+
+Sample_name_collection <- c(
+                    "First_sample_collected" = "Up regulated first sample collected",
+                    "Last_sample_collected"= "Up regulated last sample collected"
+                    )
+
+xx@compareClusterResult[["Description"]]
+
+
+xx_filter <-  xx %>% filter(Description!="Estrogen signaling pathway" &  Description!="African trypanosomiasis"& Description!="Proteoglycans in cancer" & Description!="Viral protein interaction with cytokine and cytokine receptor")
+
+selected_pathways <- sample(xx@compareClusterResult, 10)
+
+pp <- dotplot(xx_filter, x="Trajectory_group",color="p.adjust",by = "count",showCategory=3,includeAll=TRUE) + facet_grid(~up_down_regulation,labeller = as_labeller(Sample_name_collection)) +
+aes(x=fct_relevel(Trajectory_group, c('2', '3', '4_S','4_F','5'))) + xlab(NULL) +
+scale_color_gradientn(colours=c("#006837","#31A354","#78C679","#C2E699"),guide=guide_colorbar(reverse=TRUE, order=1)) +
+   scale_y_discrete(labels=function(x) str_wrap(x, width=40),expand = c(0, 3))+
+    coord_fixed(ratio=1)+
+guides(size = guide_legend(override.aes=list(shape=1))) + #gene ratio
+theme(panel.grid.major.y = element_line(linetype='dotted', color='#808080'),
+panel.grid.major.x = element_blank())
+
+pp
+
+
+
+yy <- compareCluster(Entrez ~Trajectory_group+up_down_regulation,data=First_vs_last_DF, fun = "enrichPathway")
+
+yy_df <-  as.data.frame(yy)
+yy_filter <-  yy %>% filter(Description!="Regulation of Insulin-like Growth Factor (IGF) transport and uptake by Insulin-like Growth Factor Binding Proteins (IGFBPs)" & Description!="Post-translational protein phosphorylation" & Description!="Platelet degranulation" & Description!="Response to elevated platelet cytosolic Ca2+" & Description!="Platelet activation, signaling and aggregation"  & Description!="Keratinization" & Description!="Formation of the cornified envelope" & Description!="Retinoid metabolism and transport"& Description!="Chylomicron assembly" & Description!="Scanvenging of heme from plasma")
+
+qq <- dotplot(yy_filter, x="Trajectory_group",color="p.adjust",by = "count",showCategory=2,includeAll=TRUE) + 
+  facet_grid(~up_down_regulation,labeller = as_labeller(Sample_name_collection)) +
+aes(x=fct_relevel(Trajectory_group, c('2', '3', '4_S','4_F','5'))) + xlab(NULL) +
+#scale_color_gradientn(colours=c("#b3eebe", "#46bac2", "#371ea3"),guide=guide_colorbar(reverse=TRUE, order=1)) +
+scale_color_gradientn(colours=c("#006837","#31A354","#78C679","#C2E699"),guide=guide_colorbar(reverse=TRUE, order=1)) +
+guides(size = guide_legend(override.aes=list(shape=1))) +
+theme(panel.grid.major.y = element_line(linetype='dotted', color='#808080'),
+panel.grid.major.x = element_blank())
+
+qq
+
+#egulation of Insulin-like Growth Factor (IGF) transport and uptake by Insulin-like Growth Factor Binding Proteins (IGFBPs)
+
+
+test_binding <- data <- rbind(xx,yy)
+
+#totest
+library(clusterProfiler)
+data(gcSample)
+xx <- compareCluster(gcSample, fun="enrichKEGG",
+                     organism="hsa", pvalueCutoff=0.05)
+xx <- pairwise_termsim(xx)                     
+p1 <- emapplot(xx)
+p2 <- emapplot(xx, legend_n=2) 
+p3 <- emapplot(xx, pie="count")
+p4 <- emapplot(xx, pie="count", cex_category=1.5, layout="kk")
+cowplot::plot_grid(p1, p2, p3, p4, ncol=2, labels=LETTERS[1:4])
+
+
+
+pp
+
+
+
+```
+
+#longitudinal analysis with deeath
+
+#Smoothing spline with TG4-F
+
+
+```{r TEST ADDING TG4 fatalities , fig.height=5, fig.width=8}
+library(gamm4)
+
+ArthurDF_withClinical_with_BMI_noNA_Traj <- ArthurDF_withClinical_with_BMI[!is.na(ArthurDF_withClinical_with_BMI$trajectory_group),]
+#Give protein of interest
+
+#Degradation of the extracellular matrix
+#protein_interest <- c('CTSG','MMP2','COL1A1','KLKB1','COL6A3','COL1A2','COL14A1','CTRB2','COL3A1','BMP1','MMP14','PRSS1','PLG','A2M','FBN1','FN1','ELN','COL4A2','HSPG2','SPP1','CAST','CD44')
+
+#nets
+#protein_interest <- c('H1.2',	'H1.3',	'H1.4',	'H1.5', 'H1.0',	'H2AC20',	'H2AC8',	'H2BC10',	'H2BC14',	'H2BC18',	'H2BC3',	'H2BC5','H2AC1','H2AZ1','H2BC13','H3C12','CTSG',	'LCN2',	'RNASE2',	'RPS27A',	'S100A11',	'S100A8',	'S100A9',	'VIM')
+
+#nets FORATION
+protein_interest <- c('H1.2',	'H1.3',	'H1.4',	'H1.5', 'H1.0',	'H2AC20',	'H2AC8',	'H2BC10',	'H2BC14',	'H2BC18',	'H2BC3',	'H2BC5','H2AC1','H2AZ1','H2BC13','H3C12','ACTB',"ACTG1")
+
+#Complement and coagulation cascades
+#protein_interest <-  c("F2","SERPING1","PROS1","CPB2","CFHR1","C9","VTN","CPN2","CFI","CFH","C1QA","C1S","CRP","C1QB","C1QC","C3","CFB","C2","MBL2","A2M","SERPIND1","KLKB1","GP1BA","F9","F10","FGG","FGB")
+
+
+#Dilated cardiomyopathy KEGG CLUSTER 1
+#protein_interest <-  c('ACTG1','ACTB','TPM3','TPM1','MYH7','TPM4','ACTC1')
+
+#Cholesterol metabolismKEGG cluster
+#protein_interest <-  c('APOH','APOC3','APOA1','APOE','APOA2','APOC1','APOA1')
+
+# cell adhesion molecules KEGG -final
+#protein_interest <- c('ICAM3','ICOSLG','SELP','SELE','SELL','NECTIN1','ICAM2','PDCD1LG2','CD58')
+
+#protein_interest <- c('H1.5')
+
+#Scale (z-score)
+
+
+## prepare data frame
+ArthurDF_withClinical_with_BMI_noNA_Traj <- ArthurDF_withClinical_with_BMI_noNA_Traj[!is.na(ArthurDF_withClinical_with_BMI_noNA_Traj$event_date),]
+ArthurDF_withClinical_with_BMI_noNA_Traj <- ArthurDF_withClinical_with_BMI_noNA_Traj %>% filter(event_date > -1) %>% filter(event_date <40)
+
+ArthurDF_withClinical_rowname <-  ArthurDF_withClinical_with_BMI_noNA_Traj %>% remove_rownames %>% column_to_rownames(var="sample_id")
+
+merge_DF_test <- ArthurDF_withClinical_rowname
+#test merging columnds
+merge_DF_test$new_traj <-paste(ArthurDF_withClinical_rowname$trajectory_group, ArthurDF_withClinical_rowname$Death, sep="_")
+
+merge_DF_Test_First <- merge_DF_test %>%
+  dplyr::select(new_traj, everything())
+
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "5_TRUE"] <- "5"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "1_FALSE"] <- "1"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "1_TRUE"] <- "1"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "2_TRUE"] <- "2"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "2_FALSE"] <- "2"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "3_TRUE"] <- "3"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "3_FALSE"] <- "3"
+
+
+ArthurDF_withClinical_long <-  merge_DF_Test_First[37:2946]
+
+
+plasma_proteomics_global_dda_counts_zscored_new <- data.frame(scale(ArthurDF_withClinical_long))
+
+
+#Select quant ifo
+protein_interest_quant <- plasma_proteomics_global_dda_counts_zscored_new %>% dplyr::select(protein_interest)
+
+#Average the proteins of interest PER SAMPLE
+#ONLY KEEP THE AVERAGED ONE!!
+protein_interest_quant <- protein_interest_quant %>%
+  filter_all(any_vars(!is.na(.))) %>%
+  mutate(averagemodule = rowMeans(., na.rm = T)) %>%
+  dplyr::select(averagemodule) %>%
+  rownames_to_column()
+
+
+#remove NA in trajectory group
+#ArthurDF_clinical_NoNA <- ArthurDF_clinical[!is.na(ArthurDF_clinical$trajectory_group),]
+#ArthurDF_clinical_NoNA <- ArthurDF_clinical_NoNA[!is.na(ArthurDF_clinical_NoNA$event_date),]
+
+#ArthurDF_clinical_NoNA2 <- ArthurDF_clinical_NoNA %>%  filter(event_date > -1) %>% filter(event_date <40)
+
+merge_DF_Test_First2 <- cbind(rownames(merge_DF_Test_First), data.frame(merge_DF_Test_First, row.names=NULL))
+names(merge_DF_Test_First2)[names(merge_DF_Test_First2) == 'rownames(merge_DF_Test_First)'] <- 'sample_id'
+
+
+
+#COMBINE WITH CLIN DATA
+protein_interest_quant_clinical <- left_join(protein_interest_quant,
+                                             merge_DF_Test_First2,
+                                             by =c("rowname" = "sample_id"))
+
+#Factorize some clinical factors
+protein_interest_quant_clinical$new_traj <- ordered(as.factor(protein_interest_quant_clinical$new_traj))
+protein_interest_quant_clinical$participant_id <- as.factor(protein_interest_quant_clinical$participant_id)
+
+#MAKE RESULTS FILE
+res_table =   data.frame(matrix(NA, ncol = 4, nrow = 1))
+colnames(res_table) = c("p.slope", "p.intercept","p.intercept.sex", "p.intercept.age.quantile")
+
+#CREATE FORMULA FOR LONGIT ANALYSIS
+formula_use = formula("averagemodule ~ s(event_date, bs = 'cr') +
+                             s(event_date, bs = 'cr', by = new_traj)  +
+                             new_traj + sex + discretized_admit_age_quantile")
+
+
+#RUN THE MODLEL!!!
+fit <- gamm4::gamm4(formula_use, data = protein_interest_quant_clinical, random = ~(1|enrollment_site/participant_id))
+
+#EXTRACT P VaLUES ALL MODEL
+a1 =anova(fit$gam)
+aa1 = sum(a1$s.table[-c(1), 3]*a1$s.table[-c(1), 2])
+aa2 = sum(a1$s.table[-c(1), 2])
+res_table[1,1]=pchisq(aa1,aa2, lower.tail = F)
+res_table[1,2] =a1$pTerms.pv[1]
+res_table[1,3] =a1$pTerms.pv[2] ## sex
+res_table[1,4] =a1$pTerms.pv[3] ##
+
+
+
+# #PAIRWISE ######################################
+#Get DF
+active_data <- protein_interest_quant_clinical
+
+#Determine ordinal grouping
+levels_encode = sort(unique(active_data[["new_traj"]]))
+
+#create X by x DF, make it into DF
+pairwise_comparisons <- combn( levels_encode, 2)
+compout = matrix(0, ncol = ncol( pairwise_comparisons), nrow = 4)
+
+#for loop over each pairwise comparison. Will fill compout. Copied from DAWG.
+#It filters for 2 possible groups, then runs ANOVA(?) between this to extract the required pvalues (i.e. also covariates)
+for(j in 1:ncol(pairwise_comparisons)){
+  print(j)
+  tmp_data = active_data[active_data[["new_traj"]]==pairwise_comparisons[1,j]|active_data[["new_traj"]]==pairwise_comparisons[2,j],]
+  tmp_data$participant_id = as.factor(tmp_data$participant_id )
+  tmp_data$enrollment_site = as.factor(tmp_data$enrollment_site )
+  tmp_data[["new_traj"]] = ordered(as.factor(as.character(tmp_data[["new_traj"]])), levels = c(as.character(pairwise_comparisons[1,j]), as.character(pairwise_comparisons[2,j])))
+  fit_pairwise <- try(gamm4::gamm4(formula_use, data = tmp_data, random = ~(1|enrollment_site/participant_id)))
+  a1 = anova(fit_pairwise$gam)
+  compout[2,j] = a1$pTerms.pv[1]
+  compout[1,j] = a1$s.table[2,4]
+  compout[3,j] = a1$pTerms.pv[2] #sex
+  compout[4,j] = a1$pTerms.pv[3] #discretized_admit_age_quantile
+  
+}
+
+#Give the pairwise results the proper naming.
+pairwise_comparisons = paste0(pairwise_comparisons[1, ], "v", pairwise_comparisons[2, ])
+colnames(compout) = pairwise_comparisons
+rownames(compout) = c("p.slope", "p.intercept", "p.intercept.sex", "p.intercept.age.quantile")
+
+#CREATE SIGNIFICANCE BARZ
+tmp.out <- compout
+
+#Gives names to each pvalue
+values.out <- c(tmp.out[1,], tmp.out[2,], tmp.out[3,], tmp.out[4,])
+        names(values.out) <- c(paste0(rownames(tmp.out)[1],"_", colnames(tmp.out[,1:ncol(tmp.out)])),
+                               paste0(rownames(tmp.out)[2],"_", colnames(tmp.out[,1:ncol(tmp.out)])),
+                               paste0(rownames(tmp.out)[3],"_", colnames(tmp.out[,1:ncol(tmp.out)])),
+                               paste0(rownames(tmp.out)[4],"_", colnames(tmp.out[,1:ncol(tmp.out)])))
+#tranpose
+values.out <- data.frame(t(data.frame(values.out)))
+rownames(values.out) <- 1
+
+#bind with ANOVA Pvalues
+significanceDF <- cbind(res_table, values.out)
+
+#Select only pairwise (Again.....)
+comps_loop <- significanceDF[,-1:-4]
+comps_loop <- pivot_longer(comps_loop, cols = 1:ncol(comps_loop), names_sep = "_", names_to = c("test", "comp"))
+
+#Create the DF with slope & intercept
+comps <- as.data.frame(paste(signif(comps_loop$value[comps_loop$test == "p.slope"],
+                                            digits = 2), "/", signif(comps_loop$value[comps_loop$test == "p.intercept"], digits = 2)))
+
+
+
+#CREATE PLOTTING DF
+
+plotDF <- protein_interest_quant_clinical
+
+
+
+plotDF$yhat = predict(fit$mer)
+unique_plotDF <- dplyr::select(plotDF, c("event_date", "new_traj", "sex", "discretized_admit_age_quantile"))
+unique_plotDF <-  unique_plotDF %>% distinct()
+unique_plotDF$participant_id = 111
+unique_plotDF$yhat_wo_re <- rowSums(suppressWarnings(predict.gam(fit$gam,  unique_plotDF,
+                                                                 type="terms", exclude = c("sex", "discretized_admit_age_quantile")))) +
+                                                                attributes(suppressWarnings(predict.gam(fit$gam,  unique_plotDF,
+                                                                type="terms", exclude = c("sex", "discretized_admit_age_quantile"))))$constant
+unique_plotDF$participant_id  = NULL
+unique_plotDF$sex  = NULL
+unique_plotDF$discretized_admit_age_quantile  = NULL
+plotDF = merge(plotDF, unique_plotDF, by.x=c("event_date", "new_traj"), by.y=c("event_date", "new_traj"))
+
+#PLOT?
+
+trajectory_group_name <- c(
+                    "1" = "TG1",
+                    "2"= "TG2",
+                    "3" = "TG3",
+                    "4_FALSE" = "TG4_S",
+                    "4_TRUE" = "TG4_F",
+                    "5" = "TG5"
+                    )
+
+
+lineplot <- plotDF %>% 
+  ggplot(mapping = aes(x = event_date, y = averagemodule)) +
+  geom_line(mapping = aes(group = participant_id, y = averagemodule), color ='gray', alpha = 0.4) +
+  #geom_line(mapping = aes(group = participant_id, y = yhat), alpha = 0.2, size = 2) +
+  geom_point(mapping = aes_string(color = "new_traj"), alpha = 0.7, size = 2) +
+  geom_line(mapping = aes_string(group = "new_traj", y = "yhat_wo_re"),alpha = 1, size = 2, color = "blue") +
+  #geom_vline(xintercept = knots, linetype = 2) +
+  facet_wrap(facets = ~get("new_traj"), nrow = 1,labeller = as_labeller(trajectory_group_name)) + 
+      theme_bw() + 
+  scale_color_manual(values = c("blue","#ffeda0","#FEB24C","#FD8D3C","#E31A1C","#800026")) +
+    xlab("Hospitalization day")+ 
+    ylab(" Avg. normalized intensity") +
+  ylim(-2,2)+
+      #labs(y = unique(plotDF$name)) + 
+      theme(legend.pos = "none", text=element_text(size=25)) 
+
+#lineplot
+
+
+lineplot2 <- plotDF %>% 
+  ggplot(mapping = aes(x = event_date, y = averagemodule, colour=new_traj)) +
+  #geom_line(mapping = aes(group = participant_id, y = averagemodule), color ='gray', alpha = 0.4) +
+ # geom_line(mapping = aes(group = participant_id, y = yhat), alpha = 0.2, size = 2) +
+ #geom_point(mapping = aes_string(color = "trajectory_group"), alpha = 0.7, size = 2) +
+  geom_line(mapping = aes_string(group = "new_traj", y = "yhat_wo_re"),alpha = 1, size = 2) +
+  #geom_vline(xintercept = knots, linetype = 2) +
+  #facet_wrap(facets = ~get("trajectory_group"), nrow = 1,labeller = as_labeller(trajectory_group_name)) + 
+      theme_bw() + 
+  scale_color_manual(values = c("1"="#ffeda0","2"="#FEB24C","3"="#FD8D3C","4_FALSE"="#E31A1C","5"="#800026","4_TRUE"="#bd0026")) +
+    xlab("Hospitalization day")+ 
+    ylab(" Avg. normalized intensity") +
+  ylim(-2,2)#+
+      #labs(y = unique(plotDF$name)) #+ 
+    #  theme(legend.pos = "none", text=element_text(size=22),axis.text = element_text(face="bold"))
+
+
+lineplot2 +  theme_light(base_size = 20) +
+   theme(legend.position="none", axis.text = element_text(face="bold"))  + 
+      theme(legend.pos = "none", text=element_text(size=20)) +
+   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+
+
+
+
+
+svg(filename="C:/Users/CH209897/Dropbox (BCH)/Data Exchange Kinga-AV/IMPACC/R_figures/H1_5_longi.svg",width = 8, height = 4)
+lineplot2
+dev.off()
+
+
+
+
+lineplot2 <- plotDF %>% 
+  ggplot(mapping = aes(x = event_date, y = averagemodule, colour=new_traj)) +
+  geom_line(mapping = aes(group = participant_id, y = averagemodule), color ='gray', alpha = 0.4) +
+ # geom_line(mapping = aes(group = participant_id, y = yhat), alpha = 0.2, size = 2) +
+geom_point(mapping = aes_string(color = "new_traj"), alpha = 0.7, size = 2) +
+  geom_line(mapping = aes_string(group = "trajectory_group", y = "yhat_wo_re"),alpha = 1, size = 2,color ='black') +
+ # geom_vline(xintercept = knots, linetype = 2) +
+  facet_wrap(facets = ~get("new_traj"), nrow = 1,labeller = as_labeller(trajectory_group_name)) + 
+      theme_bw() + 
+  scale_color_manual(values = c("1"="#ffeda0","2"="#FEB24C","3"="#FD8D3C","4_FALSE"="#E31A1C","5"="#800026","4_TRUE"="#bd0026")) +
+    xlab("Hospitalization day")+ 
+    ylab(" Avg. normalized intensity") +
+  ylim(-2,2)+
+      #labs(y = unique(plotDF$name)) + 
+      theme(legend.pos = "none", text=element_text(size=20)) +
+   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+
+lineplot2 
+
+
+
+```
+
+
+
+
+#TG4 S vs F
+
+```{r,fig.width=8,fig.height=8}
+ArthurDF_withClinical_with_BMI_noNA_Traj <- ArthurDF_withClinical_with_BMI[!is.na(ArthurDF_withClinical_with_BMI$trajectory_group),]
+
+
+#test merging columnds
+ArthurDF_withClinical_with_BMI_noNA_Traj$new_traj <-paste(ArthurDF_withClinical_with_BMI_noNA_Traj$trajectory_group, ArthurDF_withClinical_with_BMI_noNA_Traj$Death, sep="_")
+
+merge_DF_Test_First <- ArthurDF_withClinical_with_BMI_noNA_Traj %>%
+  dplyr::select(new_traj, everything())
+
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "5_TRUE"] <- "5"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "1_FALSE"] <- "1"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "1_TRUE"] <- "1"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "2_TRUE"] <- "2"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "2_FALSE"] <- "2"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "3_TRUE"] <- "3"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "3_FALSE"] <- "3"
+
+
+TG4_SF <- merge_DF_Test_First %>% filter(new_traj=="4_FALSE" | new_traj=="4_TRUE")
+
+
+
+
+TG4_SF2 <- TG4_SF %>% mutate(weeks = case_when(
+  
+ event_type== "Visit 1"  ~ "1"
+))
+
+TG4_SF2_F <- TG4_SF2 %>% mutate(weeks = case_when(
+  
+ event_date <= 7  ~ "2",
+ ( event_date > 7 & event_date <= 14 )  ~ "3",
+ (  event_date > 15 & event_date <= 21)  ~ "4",
+   ( event_date > 22 & event_date <= 28) ~ "5"
+ 
+))
+
+
+
+
+
+TG4_SF2_F2 <- TG4_SF2_F %>% dplyr::select(weeks, everything()) #%>%
+# filter( event_type!= "Visit 1")
+
+
+
+#take only proteins
+test <- colnames(TG4_SF2_F2)[39:ncol(TG4_SF2_F2)]
+
+#ANOVA long format
+ANOVA_DF_LONG <- TG4_SF2_F2 %>% gather(test, key = "protein",value = "Intensity")
+
+
+
+#filter 50% missing  values
+DF_clinical_70p <- ANOVA_DF_LONG %>% 
+  filter(new_traj=="4_FALSE" | new_traj=="4_TRUE") %>%
+  filter(event_type== "Visit 1") %>% 
+  mutate(uniqueSamplesInDF = length(unique(sample_id))) %>%
+  group_by(protein) %>%
+  mutate(countMissingValues = sum(!is.na(Intensity))) %>%
+  mutate(percentageMissing = countMissingValues / uniqueSamplesInDF) %>%
+  filter(percentageMissing > 0.5) %>% # HERE YOU CAN APPLY THE CUT OFF! Here I do 70%
+  dplyr::select(sample_id, new_traj,protein, Intensity) #clean up by selecting the original columns
+
+#ANOVA
+results_t_test_admission <- DF_clinical_70p %>%
+  drop_na(Intensity) %>%
+  dplyr::group_by(protein) %>%
+  t_test(Intensity ~ new_traj,detailed=T)
+
+#adjusted p-value BJ = benjamini-hochberg
+
+results_t_test_admission$Padjusted <- p.adjust(results_t_test_admission$p, method = "BH")
+
+
+
+results_t_test_admission$negPadjusted <-  -log10(results_t_test_admission$Padjusted)
+results_t_test_admission <-results_t_test_admission %>% mutate(Significant = case_when(
+  
+ Padjusted < 0.05 ~ "Significant",
+ Padjusted >= "0.05" ~"Not_sign"
+))
+
+
+#write.csv(results_t_test_4FS,"results_t_test_TG4SF_week2.csv")
+
+
+
+  #Determine if up or down regulated
+ results_t_test_4FS <- results_t_test_4FS%>%  mutate(Direction = ifelse(Padjusted > 0.05, "NotSignificant", ifelse(estimate < 0, "Down", "Up")))
+
+#Results_ttest_BTH_CB_sign <- Results_ttest_BTH_group %>% filter(Results_ttest_BTH_group$negPadjusted>=1.3)
+
+
+
+kebab <- ggplot(results_t_test_4FS, aes(x = as.numeric(estimate), y = as.numeric(negPadjusted))) +
+  geom_point(aes(fill = Direction),size = 5,pch=21) +
+   scale_fill_manual(values = c( "#800026","grey60", "darkturquoise"))  +
+   geom_text_repel(
+    data = subset(results_t_test_4FS, Padjusted <0.05),
+    aes(label = protein),
+    size =5,
+    box.padding = unit(0.35, "lines"),
+    point.padding = unit(0.3, "lines")  ) +
+  geom_hline(yintercept=1.3, linetype="dashed", color = "black",size=1) +
+   xlab("TG4S vs. TG4F Admission")+
+  ylab("-log10(padj-value)")+
+   theme_light(base_size = 22) +
+  theme(
+    legend.position = "none",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank())
+
+
+```
+
+#ADMISSIOn
+
+```{r}
+ArthurDF_withClinical_with_BMI_noNA_Traj <- ArthurDF_withClinical_with_BMI[!is.na(ArthurDF_withClinical_with_BMI$trajectory_group),]
+
+
+#test merging columnds
+ArthurDF_withClinical_with_BMI_noNA_Traj$new_traj <-paste(ArthurDF_withClinical_with_BMI_noNA_Traj$trajectory_group, ArthurDF_withClinical_with_BMI_noNA_Traj$Death, sep="_")
+
+merge_DF_Test_First <- ArthurDF_withClinical_with_BMI_noNA_Traj %>%
+  dplyr::select(new_traj, everything())
+
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "5_TRUE"] <- "5"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "1_FALSE"] <- "1"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "1_TRUE"] <- "1"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "2_TRUE"] <- "2"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "2_FALSE"] <- "2"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "3_TRUE"] <- "3"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "3_FALSE"] <- "3"
+
+
+TG4_SF <- merge_DF_Test_First %>% filter(new_traj=="4_FALSE" | new_traj=="4_TRUE")
+
+
+
+
+TG4_SF2 <- TG4_SF %>% mutate(weeks = case_when(
+  
+ event_type== "Visit 1"  ~ "1"
+))
+
+TG4_SF2_F <- TG4_SF2 %>% mutate(weeks = case_when(
+  
+ event_date <= 7  ~ "2",
+ ( event_date > 7 & event_date <= 14 )  ~ "3",
+ (  event_date > 15 & event_date <= 21)  ~ "4",
+   ( event_date > 22 & event_date <= 28) ~ "5"
+ 
+))
+
+
+
+
+
+TG4_SF2_F2 <- TG4_SF2_F %>% dplyr::select(weeks, everything()) #%>%
+# filter( event_type!= "Visit 1")
+
+
+
+#take only proteins
+test <- colnames(TG4_SF2_F2)[39:ncol(TG4_SF2_F2)]
+
+#ANOVA long format
+ANOVA_DF_LONG <- TG4_SF2_F2 %>% gather(test, key = "protein",value = "Intensity")
+
+
+
+#filter 50% missing  values
+DF_clinical_70p <- ANOVA_DF_LONG %>% 
+  filter(new_traj=="4_FALSE" | new_traj=="4_TRUE") %>%
+  filter(event_type== "Visit 1") %>% 
+  mutate(uniqueSamplesInDF = length(unique(sample_id))) %>%
+  group_by(protein) %>%
+  mutate(countMissingValues = sum(!is.na(Intensity))) %>%
+  mutate(percentageMissing = countMissingValues / uniqueSamplesInDF) %>%
+  filter(percentageMissing > 0.5) %>% # HERE YOU CAN APPLY THE CUT OFF! Here I do 70%
+  dplyr::select(sample_id, new_traj,protein, Intensity) #clean up by selecting the original columns
+
+#ANOVA
+results_t_test_admission <- DF_clinical_70p %>%
+  drop_na(Intensity) %>%
+  dplyr::group_by(protein) %>%
+  t_test(Intensity ~ new_traj,detailed=T)
+
+#adjusted p-value BJ = benjamini-hochberg
+
+results_t_test_admission$Padjusted <- p.adjust(results_t_test_admission$p, method = "BH")
+
+
+
+results_t_test_admission$negPadjusted <-  -log10(results_t_test_admission$Padjusted)
+results_t_test_admission <-results_t_test_admission %>% mutate(Significant = case_when(
+  
+ Padjusted < 0.05 ~ "Significant",
+ Padjusted >= "0.05" ~"Not_sign"
+))
+```
+
+
+
+#Week 1
+
+```{r}
+ArthurDF_withClinical_with_BMI_noNA_Traj <- ArthurDF_withClinical_with_BMI[!is.na(ArthurDF_withClinical_with_BMI$trajectory_group),]
+
+
+#test merging columnds
+ArthurDF_withClinical_with_BMI_noNA_Traj$new_traj <-paste(ArthurDF_withClinical_with_BMI_noNA_Traj$trajectory_group, ArthurDF_withClinical_with_BMI_noNA_Traj$Death, sep="_")
+
+merge_DF_Test_First <- ArthurDF_withClinical_with_BMI_noNA_Traj %>%
+  dplyr::select(new_traj, everything())
+
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "5_TRUE"] <- "5"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "1_FALSE"] <- "1"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "1_TRUE"] <- "1"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "2_TRUE"] <- "2"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "2_FALSE"] <- "2"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "3_TRUE"] <- "3"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "3_FALSE"] <- "3"
+
+
+TG4_SF <- merge_DF_Test_First %>% filter(new_traj=="4_FALSE" | new_traj=="4_TRUE")
+
+
+
+
+TG4_SF2 <- TG4_SF %>% mutate(weeks = case_when(
+  
+ event_type== "Visit 1"  ~ "1"
+))
+
+TG4_SF2_F <- TG4_SF2 %>% mutate(weeks = case_when(
+  
+ event_date <= 7  ~ "2",
+ ( event_date > 7 & event_date <= 14 )  ~ "3",
+ (  event_date > 15 & event_date <= 21)  ~ "4",
+   ( event_date > 22 & event_date <= 28) ~ "5"
+ 
+))
+
+
+
+
+
+TG4_SF2_F2 <- TG4_SF2_F %>% dplyr::select(weeks, everything()) %>%
+ filter( event_type!= "Visit 1")
+
+
+
+#take only proteins
+test <- colnames(TG4_SF2_F2)[39:ncol(TG4_SF2_F2)]
+
+#ANOVA long format
+ANOVA_DF_LONG <- TG4_SF2_F2 %>% gather(test, key = "protein",value = "Intensity")
+
+
+
+#filter 50% missing  values
+DF_clinical_70p <- ANOVA_DF_LONG %>% 
+  filter(new_traj=="4_FALSE" | new_traj=="4_TRUE") %>%
+  filter(weeks== "2") %>% 
+  mutate(uniqueSamplesInDF = length(unique(sample_id))) %>%
+  group_by(protein) %>%
+  mutate(countMissingValues = sum(!is.na(Intensity))) %>%
+  mutate(percentageMissing = countMissingValues / uniqueSamplesInDF) %>%
+  filter(percentageMissing > 0.5) %>% # HERE YOU CAN APPLY THE CUT OFF! Here I do 70%
+  dplyr::select(sample_id, new_traj,protein, Intensity) #clean up by selecting the original columns
+
+#ANOVA
+results_t_test_week1 <- DF_clinical_70p %>%
+  drop_na(Intensity) %>%
+  dplyr::group_by(protein) %>%
+  t_test(Intensity ~ new_traj,detailed=T)
+
+#adjusted p-value BJ = benjamini-hochberg
+
+results_t_test_week1$Padjusted <- p.adjust(results_t_test_week1$p, method = "BH")
+
+
+
+results_t_test_week1$negPadjusted <-  -log10(results_t_test_week1$Padjusted)
+results_t_test_week1 <-results_t_test_week1 %>% mutate(Significant = case_when(
+  
+ Padjusted < 0.05 ~ "Significant",
+ Padjusted >= "0.05" ~"Not_sign"
+))
+```
+
+
+
+#Week 2
+
+```{r}
+ArthurDF_withClinical_with_BMI_noNA_Traj <- ArthurDF_withClinical_with_BMI[!is.na(ArthurDF_withClinical_with_BMI$trajectory_group),]
+
+
+#test merging columnds
+ArthurDF_withClinical_with_BMI_noNA_Traj$new_traj <-paste(ArthurDF_withClinical_with_BMI_noNA_Traj$trajectory_group, ArthurDF_withClinical_with_BMI_noNA_Traj$Death, sep="_")
+
+merge_DF_Test_First <- ArthurDF_withClinical_with_BMI_noNA_Traj %>%
+  dplyr::select(new_traj, everything())
+
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "5_TRUE"] <- "5"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "1_FALSE"] <- "1"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "1_TRUE"] <- "1"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "2_TRUE"] <- "2"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "2_FALSE"] <- "2"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "3_TRUE"] <- "3"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "3_FALSE"] <- "3"
+
+
+TG4_SF <- merge_DF_Test_First %>% filter(new_traj=="4_FALSE" | new_traj=="4_TRUE")
+
+
+
+
+TG4_SF2 <- TG4_SF %>% mutate(weeks = case_when(
+  
+ event_type== "Visit 1"  ~ "1"
+))
+
+TG4_SF2_F <- TG4_SF2 %>% mutate(weeks = case_when(
+  
+ event_date <= 7  ~ "2",
+ ( event_date > 7 & event_date <= 14 )  ~ "3",
+ (  event_date > 15 & event_date <= 21)  ~ "4",
+   ( event_date > 22 & event_date <= 28) ~ "5"
+ 
+))
+
+
+
+
+
+TG4_SF2_F2 <- TG4_SF2_F %>% dplyr::select(weeks, everything()) %>%
+ filter( event_type!= "Visit 1")
+
+
+
+#take only proteins
+test <- colnames(TG4_SF2_F2)[39:ncol(TG4_SF2_F2)]
+
+#ANOVA long format
+ANOVA_DF_LONG <- TG4_SF2_F2 %>% gather(test, key = "protein",value = "Intensity")
+
+
+
+#filter 50% missing  values
+DF_clinical_70p <- ANOVA_DF_LONG %>% 
+  filter(new_traj=="4_FALSE" | new_traj=="4_TRUE") %>%
+  filter(weeks== "3") %>% 
+  mutate(uniqueSamplesInDF = length(unique(sample_id))) %>%
+  group_by(protein) %>%
+  mutate(countMissingValues = sum(!is.na(Intensity))) %>%
+  mutate(percentageMissing = countMissingValues / uniqueSamplesInDF) %>%
+  filter(percentageMissing > 0.5) %>% # HERE YOU CAN APPLY THE CUT OFF! Here I do 70%
+  dplyr::select(sample_id, new_traj,protein, Intensity) #clean up by selecting the original columns
+
+#ANOVA
+results_t_test_week2 <- DF_clinical_70p %>%
+  drop_na(Intensity) %>%
+  dplyr::group_by(protein) %>%
+  t_test(Intensity ~ new_traj,detailed=T)
+
+#adjusted p-value BJ = benjamini-hochberg
+
+results_t_test_week2$Padjusted <- p.adjust(results_t_test_week2$p, method = "BH")
+
+
+
+results_t_test_week2$negPadjusted <-  -log10(results_t_test_week2$Padjusted)
+results_t_test_week2 <-results_t_test_week2 %>% mutate(Significant = case_when(
+  
+ Padjusted < 0.05 ~ "Significant",
+ Padjusted >= "0.05" ~"Not_sign"
+))
+```
+
+
+#Week 3
+
+```{r}
+ArthurDF_withClinical_with_BMI_noNA_Traj <- ArthurDF_withClinical_with_BMI[!is.na(ArthurDF_withClinical_with_BMI$trajectory_group),]
+
+
+#test merging columnds
+ArthurDF_withClinical_with_BMI_noNA_Traj$new_traj <-paste(ArthurDF_withClinical_with_BMI_noNA_Traj$trajectory_group, ArthurDF_withClinical_with_BMI_noNA_Traj$Death, sep="_")
+
+merge_DF_Test_First <- ArthurDF_withClinical_with_BMI_noNA_Traj %>%
+  dplyr::select(new_traj, everything())
+
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "5_TRUE"] <- "5"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "1_FALSE"] <- "1"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "1_TRUE"] <- "1"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "2_TRUE"] <- "2"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "2_FALSE"] <- "2"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "3_TRUE"] <- "3"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "3_FALSE"] <- "3"
+
+
+TG4_SF <- merge_DF_Test_First %>% filter(new_traj=="4_FALSE" | new_traj=="4_TRUE")
+
+
+
+
+TG4_SF2 <- TG4_SF %>% mutate(weeks = case_when(
+  
+ event_type== "Visit 1"  ~ "1"
+))
+
+TG4_SF2_F <- TG4_SF2 %>% mutate(weeks = case_when(
+  
+ event_date <= 7  ~ "2",
+ ( event_date > 7 & event_date <= 14 )  ~ "3",
+ (  event_date > 15 & event_date <= 21)  ~ "4",
+   ( event_date > 22 & event_date <= 28) ~ "5"
+ 
+))
+
+
+
+
+
+TG4_SF2_F2 <- TG4_SF2_F %>% dplyr::select(weeks, everything()) %>%
+ filter( event_type!= "Visit 1")
+
+
+
+#take only proteins
+test <- colnames(TG4_SF2_F2)[39:ncol(TG4_SF2_F2)]
+
+#ANOVA long format
+ANOVA_DF_LONG <- TG4_SF2_F2 %>% gather(test, key = "protein",value = "Intensity")
+
+
+
+#filter 50% missing  values
+DF_clinical_70p <- ANOVA_DF_LONG %>% 
+  filter(new_traj=="4_FALSE" | new_traj=="4_TRUE") %>%
+  filter(weeks== "4") %>% 
+  mutate(uniqueSamplesInDF = length(unique(sample_id))) %>%
+  group_by(protein) %>%
+  mutate(countMissingValues = sum(!is.na(Intensity))) %>%
+  mutate(percentageMissing = countMissingValues / uniqueSamplesInDF) %>%
+  filter(percentageMissing > 0.5) %>% # HERE YOU CAN APPLY THE CUT OFF! Here I do 70%
+  dplyr::select(sample_id, new_traj,protein, Intensity) #clean up by selecting the original columns
+
+#ANOVA
+results_t_test_week3 <- DF_clinical_70p %>%
+  drop_na(Intensity) %>%
+  dplyr::group_by(protein) %>%
+  t_test(Intensity ~ new_traj,detailed=T)
+
+#adjusted p-value BJ = benjamini-hochberg
+
+results_t_test_week3$Padjusted <- p.adjust(results_t_test_week3$p, method = "BH")
+
+
+
+results_t_test_week3$negPadjusted <-  -log10(results_t_test_week3$Padjusted)
+results_t_test_week3 <-results_t_test_week3 %>% mutate(Significant = case_when(
+  
+ Padjusted < 0.05 ~ "Significant",
+ Padjusted >= "0.05" ~"Not_sign"
+))
+```
+
+
+
+
+#Week4
+
+```{r}
+ArthurDF_withClinical_with_BMI_noNA_Traj <- ArthurDF_withClinical_with_BMI[!is.na(ArthurDF_withClinical_with_BMI$trajectory_group),]
+
+
+#test merging columnds
+ArthurDF_withClinical_with_BMI_noNA_Traj$new_traj <-paste(ArthurDF_withClinical_with_BMI_noNA_Traj$trajectory_group, ArthurDF_withClinical_with_BMI_noNA_Traj$Death, sep="_")
+
+merge_DF_Test_First <- ArthurDF_withClinical_with_BMI_noNA_Traj %>%
+  dplyr::select(new_traj, everything())
+
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "5_TRUE"] <- "5"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "1_FALSE"] <- "1"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "1_TRUE"] <- "1"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "2_TRUE"] <- "2"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "2_FALSE"] <- "2"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "3_TRUE"] <- "3"
+merge_DF_Test_First$new_traj[merge_DF_Test_First$new_traj == "3_FALSE"] <- "3"
+
+
+TG4_SF <- merge_DF_Test_First %>% filter(new_traj=="4_FALSE" | new_traj=="4_TRUE")
+
+
+
+
+TG4_SF2 <- TG4_SF %>% mutate(weeks = case_when(
+  
+ event_type== "Visit 1"  ~ "1"
+))
+
+TG4_SF2_F <- TG4_SF2 %>% mutate(weeks = case_when(
+  
+ event_date <= 7  ~ "2",
+ ( event_date > 7 & event_date <= 14 )  ~ "3",
+ (  event_date > 15 & event_date <= 21)  ~ "4",
+   ( event_date > 22 & event_date <= 28) ~ "5"
+ 
+))
+
+
+
+
+
+TG4_SF2_F2 <- TG4_SF2_F %>% dplyr::select(weeks, everything()) %>%
+ filter( event_type!= "Visit 1")
+
+
+
+#take only proteins
+test <- colnames(TG4_SF2_F2)[39:ncol(TG4_SF2_F2)]
+
+#ANOVA long format
+ANOVA_DF_LONG <- TG4_SF2_F2 %>% gather(test, key = "protein",value = "Intensity")
+
+
+
+#filter 50% missing  values
+DF_clinical_70p <- ANOVA_DF_LONG %>% 
+  filter(new_traj=="4_FALSE" | new_traj=="4_TRUE") %>%
+  filter(weeks== "5") %>% 
+  mutate(uniqueSamplesInDF = length(unique(sample_id))) %>%
+  group_by(protein) %>%
+  mutate(countMissingValues = sum(!is.na(Intensity))) %>%
+  mutate(percentageMissing = countMissingValues / uniqueSamplesInDF) %>%
+  filter(percentageMissing > 0.5) %>% # HERE YOU CAN APPLY THE CUT OFF! Here I do 70%
+  dplyr::select(sample_id, new_traj,protein, Intensity) #clean up by selecting the original columns
+
+#ANOVA
+results_t_test_week4 <- DF_clinical_70p %>%
+  drop_na(Intensity) %>%
+  dplyr::group_by(protein) %>%
+  t_test(Intensity ~ new_traj,detailed=T)
+
+#adjusted p-value BJ = benjamini-hochberg
+
+results_t_test_week4$Padjusted <- p.adjust(results_t_test_week4$p, method = "BH")
+
+
+
+results_t_test_week4$negPadjusted <-  -log10(results_t_test_week4$Padjusted)
+results_t_test_week4 <-results_t_test_week4 %>% mutate(Significant = case_when(
+  
+ Padjusted < 0.05 ~ "Significant",
+ Padjusted >= "0.05" ~"Not_sign"
+))
+```
+
+
+
+
+#results ttest plotting test
+```{r,fig.width=15,fig.height=10}
+
+results_t_test_admission$time <- "adm"
+results_t_test_week1$time <- "week1"
+results_t_test_week2$time <- "week2"
+results_t_test_week3$time <- "week3"
+results_t_test_week4$time <- "week4"
+
+
+test_binding_ttest <- bind_rows(results_t_test_admission, results_t_test_week1, results_t_test_week2,results_t_test_week3,results_t_test_week4) %>% dplyr::select(protein,estimate,Padjusted,time)
+
+min_pvalue <- test_binding_ttest %>% 
+  group_by(protein) %>%
+  summarize(min_pvalue = min(Padjusted)) 
+
+significant_genes <- min_pvalue %>%
+  mutate(sig = min_pvalue < 0.05)
+
+test_binding_ttest_F <- left_join(test_binding_ttest, significant_genes, by = "protein")
+
+test_binding_ttest_F$alpha = ifelse(test_binding_ttest_F$sig == "TRUE",1, 0.5)
+
+#NOT NORMALIZED
+test_binding_ttest_F %>% 
+  filter(protein=="H1.5" | protein=="SPP1" | protein=="SAA1" | protein=="SAA2" | protein=="MYH7" | protein=="PF4" | protein=="CCL14") %>%
+  ggplot(aes(x=time,y=estimate,group=protein)) +
+  
+  geom_line( size = 1)+
+    #geom_line(aes(color = sig,alpha=alpha), size = 1)+
+  geom_text_repel(
+    #data = subset(test_binding_ttest_F, Padjusted <0.05),
+    aes(label = protein),
+    size =5,
+    box.padding = unit(0.35, "lines"),
+    point.padding = unit(0.3, "lines")  ) +
+  geom_point()+
+  theme_light()
+
+
+
+max_protein_value <- test_binding_ttest %>% 
+  group_by(protein) %>%
+  summarize(max_prot = max(abs(estimate)))
+
+test_binding_ttest_2 <- left_join(test_binding_ttest, max_protein_value, by = "protein")
+
+test_binding_ttest_2_TEST <- test_binding_ttest_2
+
+
+
+test_binding_ttest_2_TEST2 <- test_binding_ttest_2_TEST %>% 
+  group_by(protein)  %>% 
+ mutate(estimate_scale = scales::rescale(estimate, to = c(0, -1), 
+       from = range(estimate, na.rm = TRUE, finite = TRUE)))
+
+test_binding_ttest_2_TEST2_add1 <-  test_binding_ttest_2_TEST2 %>%   group_by(protein)  %>% 
+ mutate(estimate_scale_plus1 =estimate_scale+1 )
+
+
+
+kebab <- test_binding_ttest_2_TEST2_add1 %>% 
+  filter(protein=="H1.5" | protein=="SPP1" | protein=="SAA1"| protein=="MYH7" |protein=="MMP2" ) %>%
+  ggplot(aes(x=time,y=estimate_scale_plus1,group=protein)) +
+  geom_smooth(span = 5,se = FALSE)+
+    geom_line( size = 1)+
+  geom_text_repel(
+       aes(label = protein),
+    size =5,
+    box.padding = unit(0.35, "lines"),
+    point.padding = unit(0.3, "lines")  ) +
+  geom_point()+
+  theme_light(base_size = 22)
+
+#svg(filename="C:/Users/CH209897/Dropbox (BCH)/Data Exchange Kinga-AV/IMPACC/R_figures/TG4SF.svg",width = 20, height = 10)
+kebab
+#dev.off()
+
+```
+
+
+
+
+
+
+
+
+#count number value per proteins
+```{r}
+ArthurDF_nona <- ArthurDF_withClinical_with_BMI%>% filter(!is.na(trajectory_group))
+
+proteins <- colnames(ArthurDF_nona)[37:ncol(ArthurDF_nona)]
+ArthurDF_nona_long <- ArthurDF_nona %>% gather(proteins, key = "protein",value = "Intensity")
+ 
+count <- ArthurDF_nona_long %>%
+  group_by(protein) %>%
+  summarise(valid_count = sum(!is.na(Intensity)))
+
+count_order <- count[order(count$valid_count,decreasing=TRUE),]
+count_order$protein <- factor(count_order$protein, levels = count_order$protein)
+
+count_order2 <-  count_order%>% mutate(percentage=valid_count/2953)
+count_order2$percentage <- round(count_order2$percentage, 2)
+
+
+
+count_order2_RN <- count_order2 %>% rownames_to_column(var="rowname")
+count_order2_RN$rowname <- factor(count_order2_RN$rowname, levels = count_order2_RN$rowname)
+
+
+
+# Define the specific valid count for labeling
+specific_percentage <- 0.5
+
+a <- ggplot(count_order2_RN,aes(x=rowname,y=percentage))+
+   geom_line(color = "blue") +
+  geom_point(color = "blue") +
+  labs(x = "Protein", y = "%percentage", title = "Protein quantified") +
+  geom_text(data = count_order2_RN[count_order2_RN$percentage == specific_percentage, ],
+            aes(label = rowname), vjust = 1, hjust = 1, color = "black") +
+  theme_light(base_size = 22) +
+  theme(
+    legend.position = "none",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank())
+
+
+
+
+average_proteins_per_sample <- ArthurDF_nona_long %>%
+  group_by(sample_id) %>%
+ summarise(average_proteins = sum(!is.na(Intensity), na.rm = TRUE)) %>%
+  summarise(mean_average_proteins = mean(average_proteins))
+
+
+```
+
+
+#PVCA
+```{r}
+
+ArthurDF_nona <- ArthurDF_withClinical_with_BMI%>% filter(!is.na(trajectory_group))#%>% #filter(phase==1 | phase==2)
+
+proteins <- colnames(ArthurDF_nona)[37:ncol(ArthurDF_nona)]
+ArthurDF_nona_long <- ArthurDF_nona %>% gather(proteins, key = "protein",value = "Intensity")
+
+
+#filter 50% missing  values
+clinical_and_protein_joined_70prct <- ArthurDF_nona_long %>% 
+    mutate(uniqueSamplesInDF = length(unique(sample_id))) %>%
+  group_by(protein) %>%
+  mutate(countMissingValues = sum(!is.na(Intensity))) %>%
+  mutate(percentageMissing = countMissingValues / uniqueSamplesInDF) %>%
+ filter(percentageMissing > 0.7) %>% # HERE YOU CAN APPLY THE CUT OFF! Here I do 70%
+   dplyr::select(sample_id,participant_id,event_location,phase,enrollment_site,respiratory_status,trajectory_group,race,discretized_admit_age_quantile,event_type,ethnicity,sex,protein, Intensity)
+
+
+
+
+
+clinical_and_protein_joined_70prct_imputehalfmin <- clinical_and_protein_joined_70prct %>%
+  
+  #Make a temporary column with half the minimum value per protein
+  group_by(protein) %>%
+  mutate(halfMin = min(Intensity, na.rm = T)) %>%
+  ungroup() %>%
+  
+  #Check if there is a NA, if yes fill. Otherwise fill with original.
+  mutate(Imputed = ifelse(is.na(Intensity), halfMin, Intensity)) %>%
+  
+  #Apply Zscore again.
+  group_by(protein) %>%
+  mutate(Zscore = scale(Imputed)[,1]) %>%
+  ungroup() #%>%
+  
+  #Select only column we want to keep
+#  dplyr::select(SampleID, DX, Fake_Age, protein, Zscore)
+
+
+
+
+#Make a copy
+clinical_and_protein_joined_70prct_imputezero <- clinical_and_protein_joined_70prct
+
+#fill with 0 where is.na
+clinical_and_protein_joined_70prct_imputezero$Intensity[is.na(clinical_and_protein_joined_70prct_imputezero$Intensity)] <- 0
+
+#Z-score
+clinical_and_protein_joined_70prct_imputezero <- clinical_and_protein_joined_70prct_imputezero %>%
+  
+  #Zscore per protein
+  group_by(protein) %>%
+  mutate(Zscore = scale(Intensity)[,1]) %>%
+  ungroup() 
+
+
+
+
+
+#Prepare the DF
+prepare_pvca_proteins <- clinical_and_protein_joined_70prct_imputezero %>%
+  #select all but clinical info
+  dplyr::select(sample_id, protein, Zscore) %>%
+  #WIDE format IT
+  spread(key = protein, value = Zscore) %>%
+  #Move sampleID as rownames
+  column_to_rownames("sample_id")
+
+
+#We do the same spread (without Zscoring). After we select the clinical identifiers we want.
+prepare_pvca_clinical <- clinical_and_protein_joined_70prct_imputezero %>%
+   dplyr::select(sample_id,participant_id,event_location,phase,enrollment_site,respiratory_status,trajectory_group,race,discretized_admit_age_quantile,event_type,ethnicity,sex,protein,Zscore) %>%
+  
+  spread(key = protein, value = Zscore) %>%
+  
+  dplyr::select(participant_id,event_location,phase,enrollment_site,respiratory_status,trajectory_group,race,discretized_admit_age_quantile,event_type,ethnicity,sex)
+
+
+#devtools::install_github("dleelab/pvca")
+
+library(package = "pvca")  
+library(lme4)
+
+#Run the PVCA. inter and threshold values are taken directly from IMPACC project. You can play with it if you want but I do not exactly know what they change.
+pvca_results <- pvca::PVCA(
+  counts = t(prepare_pvca_proteins),
+  meta = prepare_pvca_clinical,
+  inter = F,
+  threshold = 0.6
+  )
+
+#Extract the PVCA results to a dataframe.
+pvca_barplot_data <- data.frame(
+  explained = as.vector(pvca_results),
+  effect    = names(pvca_results)
+  ) %>%
+  
+  #arrange from high to low. 
+  arrange(explained)
+
+
+#Plot the data
+pvca_barplot_data %>%
+  ggplot(aes(y = reorder(effect, explained), x = explained)) + #Do note the reorder of y, based on explained. 
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = signif(explained, digits = 3)), #Add number to the barplot
+            nudge_x   = 0.03,
+            size      = 3) +
+  
+  #Title and some theme adjustments.
+  labs(x = NULL, y = "Proportion of the variance explained") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1))
+
+
+
+```
+
+
+
+
+
+#BIOMARKERS DEATH SPLIT BY HOSPITAL
+##split datframe onto group
+```{r}
+
+ArthurDF_V1 <- ArthurDF_withClinical_with_BMI %>% filter(event_type=="Visit 1") %>% filter(!is.na(trajectory_group))#%>% #filter(phase==1 | phase==2)
+proteins <- colnames(ArthurDF_V1)[37:ncol(ArthurDF_V1)]
+
+ArthurDF_V1_long <- ArthurDF_V1 %>% 
+  gather(proteins, key = "protein",value = "Intensity") %>%
+  dplyr::select(sample_id,trajectory_group,enrollment_site,protein,Intensity) %>% 
+  mutate(Survivors=ifelse(trajectory_group=="5","No","Yes")) %>%
+  mutate(Hospital_group=ifelse(enrollment_site=="Arizona"|enrollment_site=="Baylor"|enrollment_site=="Boston/BWH"|enrollment_site=="Case Western"|enrollment_site=="OUHSC (Oklahoma)"|enrollment_site=="UCLA"|enrollment_site=="Yale","A","B")) %>% 
+  dplyr::select(sample_id,Survivors,Hospital_group,protein,Intensity)
+
+#filter 50% missing  values
+DF_clinical_50p <- ArthurDF_V1_long %>% 
+    mutate(uniqueSamplesInDF = length(unique(sample_id))) %>%
+  group_by(protein) %>%
+  mutate(countMissingValues = sum(!is.na(Intensity))) %>%
+  mutate(percentageMissing = countMissingValues / uniqueSamplesInDF) %>%
+ filter(percentageMissing > 0.5) %>% # HERE YOU CAN APPLY THE CUT OFF! Here I do 70%
+  dplyr::select(sample_id,Survivors,Hospital_group,protein,Intensity)
+
+
+DF_clinical_50p_imputed <- DF_clinical_50p %>%
+  #Make a temporary column with half the minimum value per protein
+  group_by(protein) %>%
+  mutate(Intensityraw=2^Intensity) %>%
+  mutate(halfMin = min(Intensityraw, na.rm = T)) %>%
+  ungroup() %>%
+  #Check if there is a NA, if yes fill. Otherwise fill with original.
+  mutate(Imputed = ifelse(is.na(Intensityraw), halfMin, Intensityraw)) %>%
+  mutate(Imputed_log2=log(Imputed,2)) %>%
+#Select only column we want to keep
+  dplyr::select(sample_id,Survivors,Hospital_group,protein, Imputed_log2)
+
+```
+
+
+### TABLE 1
+```{r}
+
+ArthurDF_V1 <- ArthurDF_withClinical_with_BMI %>% filter(event_type=="Visit 1") %>% filter(!is.na(trajectory_group)) %>% 
+  mutate(Hospital_group=ifelse(enrollment_site=="Arizona"|enrollment_site=="Baylor"|enrollment_site=="Boston/BWH"|enrollment_site=="Case Western"|enrollment_site=="OUHSC (Oklahoma)"|enrollment_site=="UCLA"|enrollment_site=="Yale","A","B")) %>% 
+  filter(Hospital_group=="A")
+
+dat <-ArthurDF_V1
+
+dat$trajectory_group     <- factor(dat$trajectory_group, levels=1:5, labels=c("TG1-Full revovery", "TG2-Full recovery-Slow","TG3-Limited recovery","TG4-Partial recovery","TG5-Did not recover"))
+
+dat$enrollment_site <-factor(dat$enrollment_site, 
+levels=c("Arizona","Baylor","Boston/BWH","Case Western","OUHSC (Oklahoma)","UCLA","Yale"),labels=c("Arizona","Baylor","Boston/BWH","Case Western","OUHSC (Oklahoma)","UCLA","Yale"))
+
+
+label(dat$enrollment_site) <- "Enrollment Site"
+
+
+
+table1(~enrollment_site | trajectory_group ,data=dat,rowlabelhead="Trajectory group", topclass="Rtable1-shade")
+
+#cohort B
+ArthurDF_V1 <- ArthurDF_withClinical_with_BMI %>% filter(event_type=="Visit 1") %>% filter(!is.na(trajectory_group)) %>% 
+  mutate(Hospital_group=ifelse(enrollment_site=="Arizona"|enrollment_site=="Baylor"|enrollment_site=="Boston/BWH"|enrollment_site=="Case Western"|enrollment_site=="OUHSC (Oklahoma)"|enrollment_site=="UCLA"|enrollment_site=="Yale","A","B")) %>% 
+  filter(Hospital_group=="B")
+
+dat <-ArthurDF_V1
+
+dat$trajectory_group     <- factor(dat$trajectory_group, levels=1:5, labels=c("TG1-Full revovery", "TG2-Full recovery-Slow","TG3-Limited recovery","TG4-Partial recovery","TG5-Did not recover"))
+
+dat$enrollment_site <-factor(dat$enrollment_site, 
+levels=c("Drexel/Tower Health","Emory","Florida","ISMMS (Mt Sinai)","OHSU (Oregon)","Stanford","UCSF","UT Austin"),labels=c("Drexel/Tower Health","Emory","Florida","ISMMS (Mt Sinai)","OHSU (Oregon)","Stanford","UCSF","UT Austin"))
+
+
+label(dat$enrollment_site) <- "Enrollment Site"
+
+
+
+table1(~enrollment_site | trajectory_group ,data=dat,rowlabelhead="Trajectory group", topclass="Rtable1-shade")
+
+
+
+
+dat$enrollment_site <-factor(dat$enrollment_site, 
+levels=c("Arizona","Baylor","Boston/BWH","Case Western","Drexel/Tower Health","Emory","Florida","ISMMS (Mt Sinai)","OHSU (Oregon)","OUHSC (Oklahoma)","Stanford","UCLA","UCSF","UT Austin","Yale"),labels=c("Arizona","Baylor","Boston/BWH","Case Western","Drexel/Tower Health","Emory","Florida","ISMMS (Mt Sinai)","OHSU (Oregon)","OUHSC (Oklahoma)","Stanford","UCLA","UCSF","UT Austin","Yale"))
+
+```
+
+
+
+
+
+
+
+##Mannwithney test to determine top feature in group A
+
+```{r}
+
+#MAAAAN
+results_t_test <- DF_clinical_50p_imputed %>%
+  filter(Hospital_group=="A")%>%
+  dplyr::group_by(protein) %>%
+  wilcox_test(Imputed_log2 ~ Survivors,detailed = TRUE)
+
+#adjusted p-value BJ = benjamini-hochberg
+
+results_t_test$Padjusted <- p.adjust(results_t_test$p, method = "BH")
+
+
+
+results_t_test$negPadjusted <-  -log10(results_t_test$Padjusted)
+results_t_test <-results_t_test %>% mutate(Significant = case_when(
+  
+ Padjusted < 0.05 ~ "Significant",
+ Padjusted >= "0.05" ~"Not_sign"
+))
+
+
+  #Determine if up or down regulated
+ results_t_test <- results_t_test%>%  mutate(Direction = ifelse(Padjusted > 0.05, "NotSignificant", ifelse(estimate < 0, "Down", "Up")))
+
+#Results_ttest_BTH_CB_sign <- Results_ttest_BTH_group %>% filter(Results_ttest_BTH_group$negPadjusted>=1.3)
+
+
+#path_out = 'C:/Users/CH209897/Dropbox (BCH)/Data Exchange AV/Lyme_DOD/tests/'
+#write.csv(results_t_test,paste(path_out,'MW_batch1.csv',sep = ''))
+
+
+protein_up_batch1 <- results_t_test %>% filter(Direction=="Up")
+protein_down_batch1 <- results_t_test %>% filter(Direction=="Down")
+
+
+a <- ggplot(results_t_test, aes(x = as.numeric(estimate), y = as.numeric(negPadjusted))) +
+  geom_point(aes(fill = Direction),size = 5,pch=21,color="white") +
+   scale_fill_manual(values = c("green", "grey60","red"))  +
+   geom_text_repel(
+    data = subset(results_t_test, Padjusted <0.05),
+    aes(label = protein),
+    size =5,
+    box.padding = unit(0.35, "lines"),
+    point.padding = unit(0.3, "lines")  ) +
+  geom_hline(yintercept=1.3, linetype="dashed", color = "black",size=1) +
+   xlab("Fatal vs. survivors group A")+
+  ylab("-log10(padj-value)")+
+   theme_light(base_size = 22) +
+  theme(
+    legend.position = "none",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank())
+
+
+
+
+svg(filename="C:/Users/CH209897/Dropbox (BCH)/Data Exchange Kinga-AV/IMPACC/Manuscript Draft/June2023/Cellreportmedicine/Biomarkers_results/MW_groupA.svg",width =10, height = 10)
+#grDevices::svg(filename="C:/Users/CH209897/Dropbox (BCH)/Data Exchange Kinga-AV/IMPACC/R_figures/NCAP.svg",width = 1654, height = 827, pointsize=12)
+
+a
+dev.off()
+
+
+```
+
+##Mannwithney test to determine top feature in group B
+
+```{r}
+
+#MAAAAN
+results_t_test_B <- DF_clinical_50p_imputed %>%
+  filter(Hospital_group=="B")%>%
+  dplyr::group_by(protein) %>%
+  wilcox_test(Imputed_log2 ~ Survivors,detailed = TRUE)
+
+#adjusted p-value BJ = benjamini-hochberg
+
+results_t_test_B$Padjusted <- p.adjust(results_t_test_B$p, method = "BH")
+
+
+
+results_t_test_B$negPadjusted <-  -log10(results_t_test_B$Padjusted)
+results_t_test_B <-results_t_test_B %>% mutate(Significant = case_when(
+  
+ Padjusted < 0.05 ~ "Significant",
+ Padjusted >= "0.05" ~"Not_sign"
+))
+
+
+  #Determine if up or down regulated
+ results_t_test_B <- results_t_test_B%>%  mutate(Direction = ifelse(Padjusted > 0.05, "NotSignificant", ifelse(estimate < 0, "Down", "Up")))
+
+#Results_ttest_BTH_CB_sign <- Results_ttest_BTH_group %>% filter(Results_ttest_BTH_group$negPadjusted>=1.3)
+
+
+#path_out = 'C:/Users/CH209897/Dropbox (BCH)/Data Exchange AV/Lyme_DOD/tests/'
+#write.csv(results_t_test,paste(path_out,'MW_batch1.csv',sep = ''))
+
+
+protein_up_batch3 <- results_t_test_B %>% filter(Direction=="Up")
+protein_down_batch3 <- results_t_test_B %>% filter(Direction=="Down")
+
+
+ggplot(results_t_test_B, aes(x = as.numeric(estimate), y = as.numeric(negPadjusted))) +
+  geom_point(aes(fill = Direction),size = 5,pch=21,color="white") +
+   scale_fill_manual(values = c("#DE77AE", "grey60","#red"))  +
+   geom_text_repel(
+    data = subset(results_t_test_B, Padjusted <0.05),
+    aes(label = protein),
+    size =5,
+    box.padding = unit(0.35, "lines"),
+    point.padding = unit(0.3, "lines")  ) +
+  geom_hline(yintercept=1.3, linetype="dashed", color = "black",size=1) +
+   xlab("Fatal vs. survivor group B")+
+  ylab("-log10(padj-value)")+
+   theme_light(base_size = 22) +
+  theme(
+    legend.position = "none",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank())
+```
+
+
+
+
+
+###COMBINE BOTH
+```{r,fig.width=20, fig.height=20}
+
+results_t_test_batch1 <- results_t_test %>% mutate(negP_batch1 = ifelse(estimate>0,(-1)*negPadjusted,(negPadjusted)))
+results_t_test_batch2 <- results_t_test_B %>% mutate(negP_batch2 = ifelse(estimate>0,(-1)*negPadjusted,(negPadjusted)))
+join <- inner_join(results_t_test_batch1,results_t_test_batch2,by=c("protein"="protein"))
+
+join_new <- join %>% mutate(sign_both = ifelse((Padjusted.x <0.05 & Padjusted.y <0.05),"Both","onlyONe"))
+join_new_dir <- join_new %>% mutate(sign_both_dir = case_when(
+  sign_both=="Both" & negP_batch1 <0 ~"Down",
+  sign_both=="Both" & negP_batch1 >0 ~"Up",
+))
+
+join_new_dir$sign_both_dir[is.na(join_new_dir$sign_both_dir)] <- "Not_sign"
+
+
+alpha <- ifelse(join_new_dir$sign_both=="Both", 0.9, 0.35)
+
+kebab <- ggplot(join_new_dir, aes(x = as.numeric(negP_batch1), y = as.numeric(negP_batch2))) +
+  geom_point(aes(fill = sign_both_dir),size = 5,pch=21,color="white",alpha=alpha) +
+   scale_fill_manual(values = c("#DE77AE", "grey60","#7FBC41"))  +
+   geom_text_repel(
+    data=subset(join_new_dir, sign_both=="Both"),
+    aes(label = protein),
+    size =4,
+    box.padding = unit(0.35, "lines"),
+    point.padding = unit(0.3, "lines"),
+    max.overlaps = getOption("ggrepel.max.overlaps", default = 30)) +
+  geom_hline(yintercept=1.3, linetype="dashed", color = "black",size=1) +
+   geom_hline(yintercept=-1.3, linetype="dashed", color = "black",size=1) +
+   geom_vline(xintercept=1.3, linetype="dashed", color = "black",size=1) +
+   geom_vline(xintercept=-1.3, linetype="dashed", color = "black",size=1) +
+   xlab("Group A")+
+  ylab("Group B")+
+ # ylim(-16,16)+
+   theme_light(base_size = 22) +
+  theme(
+    legend.position = "none",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank())
+
+kebab
+
+```
+
+##ROC&ROC
+```{r}
+#
+results_t_test$Rank<- rank(results_t_test$Padjusted)
+
+
+DF_clinical_50p_imputed_spread <- DF_clinical_50p_imputed %>% spread(key="protein",value="Imputed_log2")
+
+#select top 100 proteins
+DF_filter <- DF_clinical_50p_imputed_spread %>% 
+dplyr::select(sample_id,Survivors,Hospital_group,(results_t_test %>% as.data.frame() %>% filter(Rank < 20))$protein)
+
+
+  
+# CREATE COLUMN DX   
+DF_filter_DX <- DF_filter %>% mutate(DX = case_when(
+  
+Survivors == "Yes" ~ "0",
+   Survivors == "No" ~ "1",
+
+))  
+
+
+# MOVE DX COLUMN FIRST
+DF_filter_DX_first <- DF_filter_DX %>% dplyr::select("DX", everything())
+
+DF_filter_DX_first_groupA <- DF_filter_DX_first %>% filter(Hospital_group=="A") %>% dplyr::select(-sample_id,-Survivors,-Hospital_group)
+DF_filter_DX_first_groupB <-   DF_filter_DX_first %>% filter(Hospital_group=="B") %>% dplyr::select(-sample_id,-Survivors,-Hospital_group)
+
+
+
+dfA <- mutate_all(DF_filter_DX_first_groupA, function(x) as.numeric(as.character(x)))
+dfB <- mutate_all(DF_filter_DX_first_groupB, function(x) as.numeric(as.character(x)))
+
+
+dfA$DX <- as.factor(dfA$DX)
+dfB$DX <- as.factor(dfB$DX)
+
+# code did not work without that
+colnames(dfA) <- make.names(colnames(dfA))
+colnames(dfB) <- make.names(colnames(dfB))
+
+
+
+
+
+glm_model  <- glm(DX ~., data = dfA, family = 'binomial') %>% stepAIC(trace = T, direction = 'backward')
+
+#let's see what it proposes
+summary(glm_model)
+
+
+#check results of Logistic regression
+Train_predicted <- dfA
+Train_predicted$results_Logistic <- predict(glm_model, dfA)
+
+
+#check results of Logistic regression
+test_predicted <- dfB
+test_predicted$results_Logistic <- predict(glm_model, dfB)
+
+
+par(pty="s")
+
+#plot based on train
+roc1_t5 <- roc(Train_predicted$DX, Train_predicted$results_Logistic, 
+    plot=TRUE,
+    print.auc = T,
+    legacy.axes=TRUE, # reverse x axis ( now from 0 to 100)
+    percent=TRUE,
+    xlab="False Positive Percentage",
+    ylab="True Positive Percentage",
+    col="#800026",  #Color line
+    lwd=4, #thickness line
+    print.auc.x=45)
+
+
+roc.info <- roc(Train_predicted$DX, Train_predicted$results_Logistic,legacy.axes=TRUE)
+
+roc.df <-  data.frame(tpp=roc.info$sensitivities*100,
+                      fpp=(1-roc.info$specificities)*100,
+                      thresholds=roc.info$thresholds)
+head(roc.df)
+
+tail(roc.df)
+
+
+roc.df[roc.df$tpp > 60 & roc.df$tpp < 80,]
+
+
+#plot based on test 
+plot.roc(test_predicted$DX, test_predicted$results_Logistic, 
+    print.auc = T,
+    legacy.axes=TRUE, # reverse x axis ( now from 0 to 100)
+    percent=TRUE,
+    col="#FEB24C",  #Color line
+    lwd=4, #thickness line
+    print.auc.y=40,
+    print.auc.x=45,
+    add=TRUE)
+#add legend
+legend("bottomright", legend=c("Train data","Test data"), col=c("#800026","#FEB24C"),lwd=4)
+
+#"1"="#ffeda0","2"="#FEB24C","3"="#FD8D3C","4"="#E31A1C","5"="#800026"))
+par(pty="m")
+
+pROC::coords(roc1_t5, 0.8, ret=c("threshold", "precision", "recall"))
+sapply(seq(0, 1, by=0.05), function(x) pROC::coords(roc1_t5, x, ret=c("precision", "recall")))
+pROC::coords(roc1_t5, "all", ret = c("threshold", "recall", "precision"))
+
+# Plot the Precision-Recall curve
+plot(precision ~ recall, 
+     pROC::coords(roc1_t5, "all", ret = c("recall", "precision"), transpose = FALSE),
+     type="l", ylim = c(0, 100))
+
+
+
+```
+
+
+### ROC FINAL DEATH
+```{r,fig.height=6,fig.width=6}
+#results_t_test$Rank<- rank(results_t_test$Padjusted)
+
+
+DF_clinical_50p_imputed_spread <- DF_clinical_50p_imputed %>% spread(key="protein",value="Imputed_log2")
+
+#select top 100 proteins
+DF_filter <- DF_clinical_50p_imputed_spread %>% 
+dplyr::select(sample_id,Survivors,Hospital_group,ELN,IL1RL1,PF4,SERPINA3)
+
+
+  
+# CREATE COLUMN DX   
+DF_filter_DX <- DF_filter %>% mutate(DX = case_when(
+  
+Survivors == "Yes" ~ "0",
+   Survivors == "No" ~ "1",
+
+))  
+
+
+# MOVE DX COLUMN FIRST
+DF_filter_DX_first <- DF_filter_DX %>% dplyr::select("DX", everything())
+
+DF_filter_DX_first_groupA <- DF_filter_DX_first %>% filter(Hospital_group=="A") %>% dplyr::select(-sample_id,-Survivors,-Hospital_group)
+DF_filter_DX_first_groupB <-   DF_filter_DX_first %>% filter(Hospital_group=="B") %>% dplyr::select(-sample_id,-Survivors,-Hospital_group)
+
+
+
+dfA <- mutate_all(DF_filter_DX_first_groupA, function(x) as.numeric(as.character(x)))
+dfB <- mutate_all(DF_filter_DX_first_groupB, function(x) as.numeric(as.character(x)))
+
+
+dfA$DX <- as.factor(dfA$DX)
+dfB$DX <- as.factor(dfB$DX)
+
+# code did not work without that
+colnames(dfA) <- make.names(colnames(dfA))
+colnames(dfB) <- make.names(colnames(dfB))
+
+
+
+
+
+glm_model  <- glm(DX ~., data = dfA, family = 'binomial') #%>% stepAIC(trace = T, direction = 'backward')
+
+#let's see what it proposes
+summary(glm_model)
+
+
+#check results of Logistic regression
+Train_predicted <- dfA
+Train_predicted$results_Logistic <- predict(glm_model, dfA)
+
+
+#check results of Logistic regression
+test_predicted <- dfB
+test_predicted$results_Logistic <- predict(glm_model, dfB)
+
+
+par(pty="s")
+
+#plot based on train
+roc1_t5 <- roc(Train_predicted$DX, Train_predicted$results_Logistic, 
+    plot=TRUE,
+    print.auc = T,
+    legacy.axes=TRUE, # reverse x axis ( now from 0 to 100)
+    percent=TRUE,
+    xlab="False Positive Percentage",
+    ylab="True Positive Percentage",
+    col="#800026",  #Color line
+    lwd=4, #thickness line
+    print.auc.x=45)
+
+
+roc.info <- roc(Train_predicted$DX, Train_predicted$results_Logistic,legacy.axes=TRUE)
+
+roc.df <-  data.frame(tpp=roc.info$sensitivities*100,
+                      fpp=(1-roc.info$specificities)*100,
+                      thresholds=roc.info$thresholds)
+head(roc.df)
+
+tail(roc.df)
+
+
+roc.df[roc.df$tpp > 60 & roc.df$tpp < 80,]
+
+
+#plot based on test 
+plot.roc(test_predicted$DX, test_predicted$results_Logistic, 
+    print.auc = T,
+    legacy.axes=TRUE, # reverse x axis ( now from 0 to 100)
+    percent=TRUE,
+    col="#FEB24C",  #Color line
+    lwd=4, #thickness line
+    print.auc.y=40,
+    print.auc.x=45,
+    add=TRUE)
+#add legend
+legend("bottomright", legend=c("Train data","Test data"), col=c("#800026","#FEB24C"),lwd=4)
+
+#"1"="#ffeda0","2"="#FEB24C","3"="#FD8D3C","4"="#E31A1C","5"="#800026"))
+par(pty="m")
+
+pROC::coords(roc1_t5, 0.8, ret=c("threshold", "precision", "recall"))
+sapply(seq(0, 1, by=0.05), function(x) pROC::coords(roc1_t5, x, ret=c("precision", "recall")))
+pROC::coords(roc1_t5, "all", ret = c("threshold", "recall", "precision"))
+
+# Plot the Precision-Recall curve
+plot(precision ~ recall, 
+     pROC::coords(roc1_t5, "all", ret = c("recall", "precision"), transpose = FALSE),
+     type="l", ylim = c(0, 100))
+
+
+```
+
+
+
+
+#Plotting ROC outcome with confidence interval!
+
+
+```{r,fig.width=6.5,fig.height=6.5}
+# Plot based on train
+roc1_t5 <- roc(Train_predicted$DX, Train_predicted$results_Logistic, 
+               plot=TRUE,
+               print.auc = TRUE,
+               legacy.axes=TRUE,
+               percent=TRUE,
+               xlab="False Positive Percentage",
+               ylab="True Positive Percentage",
+               col="#800026",
+               lwd=4,
+               print.auc.x=45,
+               ci=TRUE  # Add confidence interval
+)
+
+roc.info <- roc(Train_predicted$DX, Train_predicted$results_Logistic, legacy.axes=TRUE)
+
+roc.df <-  data.frame(tpp=roc.info$sensitivities*100,
+                      fpp=(1-roc.info$specificities)*100,
+                      thresholds=roc.info$thresholds)
+head(roc.df)
+tail(roc.df)
+roc.df[roc.df$tpp > 60 & roc.df$tpp < 80,]
+
+# Plot based on test 
+plot.roc(test_predicted$DX, test_predicted$results_Logistic, 
+         print.auc = TRUE,
+         legacy.axes=TRUE,
+         percent=TRUE,
+         col="#FEB24C",
+         lwd=4,
+         print.auc.y=40,
+         print.auc.x=65,
+         add=TRUE,
+         ci=TRUE  # Add confidence interval
+)
+
+# Add legend
+legend("bottomright", legend=c("Train data", "Test data"), col=c("#800026", "#FEB24C"), lwd=4)
+
+par(pty="s")
+```
+
+### ROC DEATH ONLY ONE Protein
+#####ELN
+```{r,fig.width=6.5,fig.height=6.5}
+
+
+DF_clinical_50p_imputed_spread <- DF_clinical_50p_imputed %>% spread(key="protein",value="Imputed_log2")
+
+#select top 100 proteins
+DF_filter <- DF_clinical_50p_imputed_spread %>% 
+dplyr::select(sample_id,Survivors,Hospital_group,ELN) #,IL1RL1,PF4,SERPINA3
+
+
+  
+# CREATE COLUMN DX   
+DF_filter_DX <- DF_filter %>% mutate(DX = case_when(
+  
+Survivors == "Yes" ~ "0",
+   Survivors == "No" ~ "1",
+
+))  
+
+
+# MOVE DX COLUMN FIRST
+DF_filter_DX_first <- DF_filter_DX %>% dplyr::select("DX", everything())
+
+DF_filter_DX_first_groupA <- DF_filter_DX_first %>% filter(Hospital_group=="A") %>% dplyr::select(-sample_id,-Survivors,-Hospital_group)
+DF_filter_DX_first_groupB <-   DF_filter_DX_first %>% filter(Hospital_group=="B") %>% dplyr::select(-sample_id,-Survivors,-Hospital_group)
+
+
+
+dfA <- mutate_all(DF_filter_DX_first_groupA, function(x) as.numeric(as.character(x)))
+dfB <- mutate_all(DF_filter_DX_first_groupB, function(x) as.numeric(as.character(x)))
+
+
+dfA$DX <- as.factor(dfA$DX)
+dfB$DX <- as.factor(dfB$DX)
+
+# code did not work without that
+colnames(dfA) <- make.names(colnames(dfA))
+colnames(dfB) <- make.names(colnames(dfB))
+
+
+
+
+
+glm_model  <- glm(DX ~., data = dfA, family = 'binomial') #%>% stepAIC(trace = T, direction = 'backward')
+
+#let's see what it proposes
+summary(glm_model)
+
+
+#check results of Logistic regression
+Train_predicted <- dfA
+Train_predicted$results_Logistic <- predict(glm_model, dfA)
+
+
+#check results of Logistic regression
+test_predicted <- dfB
+test_predicted$results_Logistic <- predict(glm_model, dfB)
+
+
+par(pty="s")
+
+
+# Plot based on train
+roc1_t5 <- roc(Train_predicted$DX, Train_predicted$results_Logistic, 
+               plot=TRUE,
+               print.auc = TRUE,
+               legacy.axes=TRUE,
+               percent=TRUE,
+               xlab="False Positive Percentage",
+               ylab="True Positive Percentage",
+               col="#800026",
+               lwd=4,
+               print.auc.x=45,
+               ci=TRUE  # Add confidence interval
+)
+
+roc.info <- roc(Train_predicted$DX, Train_predicted$results_Logistic, legacy.axes=TRUE)
+
+roc.df <-  data.frame(tpp=roc.info$sensitivities*100,
+                      fpp=(1-roc.info$specificities)*100,
+                      thresholds=roc.info$thresholds)
+head(roc.df)
+tail(roc.df)
+roc.df[roc.df$tpp > 60 & roc.df$tpp < 80,]
+
+# Plot based on test 
+plot.roc(test_predicted$DX, test_predicted$results_Logistic, 
+         print.auc = TRUE,
+         legacy.axes=TRUE,
+         percent=TRUE,
+         col="#FEB24C",
+         lwd=4,
+         print.auc.y=40,
+         print.auc.x=65,
+         add=TRUE,
+         ci=TRUE  # Add confidence interval
+)
+
+# Add legend
+legend("bottomright", legend=c("Train data", "Test data"), col=c("#800026", "#FEB24C"), lwd=4)
+
+par(pty="s")
+
+```
+
+#####IL1RL1
+```{r,fig.width=6.5,fig.height=6.5}
+
+
+DF_clinical_50p_imputed_spread <- DF_clinical_50p_imputed %>% spread(key="protein",value="Imputed_log2")
+
+#select top 100 proteins
+DF_filter <- DF_clinical_50p_imputed_spread %>% 
+dplyr::select(sample_id,Survivors,Hospital_group,IL1RL1) #,IL1RL1,PF4,SERPINA3
+
+
+  
+# CREATE COLUMN DX   
+DF_filter_DX <- DF_filter %>% mutate(DX = case_when(
+  
+Survivors == "Yes" ~ "0",
+   Survivors == "No" ~ "1",
+
+))  
+
+
+# MOVE DX COLUMN FIRST
+DF_filter_DX_first <- DF_filter_DX %>% dplyr::select("DX", everything())
+
+DF_filter_DX_first_groupA <- DF_filter_DX_first %>% filter(Hospital_group=="A") %>% dplyr::select(-sample_id,-Survivors,-Hospital_group)
+DF_filter_DX_first_groupB <-   DF_filter_DX_first %>% filter(Hospital_group=="B") %>% dplyr::select(-sample_id,-Survivors,-Hospital_group)
+
+
+
+dfA <- mutate_all(DF_filter_DX_first_groupA, function(x) as.numeric(as.character(x)))
+dfB <- mutate_all(DF_filter_DX_first_groupB, function(x) as.numeric(as.character(x)))
+
+
+dfA$DX <- as.factor(dfA$DX)
+dfB$DX <- as.factor(dfB$DX)
+
+# code did not work without that
+colnames(dfA) <- make.names(colnames(dfA))
+colnames(dfB) <- make.names(colnames(dfB))
+
+
+
+
+
+glm_model  <- glm(DX ~., data = dfA, family = 'binomial') #%>% stepAIC(trace = T, direction = 'backward')
+
+#let's see what it proposes
+summary(glm_model)
+
+
+#check results of Logistic regression
+Train_predicted <- dfA
+Train_predicted$results_Logistic <- predict(glm_model, dfA)
+
+
+#check results of Logistic regression
+test_predicted <- dfB
+test_predicted$results_Logistic <- predict(glm_model, dfB)
+
+
+par(pty="s")
+
+
+# Plot based on train
+roc1_t5 <- roc(Train_predicted$DX, Train_predicted$results_Logistic, 
+               plot=TRUE,
+               print.auc = TRUE,
+               legacy.axes=TRUE,
+               percent=TRUE,
+               xlab="False Positive Percentage",
+               ylab="True Positive Percentage",
+               col="#800026",
+               lwd=4,
+               print.auc.x=45,
+               ci=TRUE  # Add confidence interval
+)
+
+roc.info <- roc(Train_predicted$DX, Train_predicted$results_Logistic, legacy.axes=TRUE)
+
+roc.df <-  data.frame(tpp=roc.info$sensitivities*100,
+                      fpp=(1-roc.info$specificities)*100,
+                      thresholds=roc.info$thresholds)
+head(roc.df)
+tail(roc.df)
+roc.df[roc.df$tpp > 60 & roc.df$tpp < 80,]
+
+# Plot based on test 
+plot.roc(test_predicted$DX, test_predicted$results_Logistic, 
+         print.auc = TRUE,
+         legacy.axes=TRUE,
+         percent=TRUE,
+         col="#FEB24C",
+         lwd=4,
+         print.auc.y=40,
+         print.auc.x=65,
+         add=TRUE,
+         ci=TRUE  # Add confidence interval
+)
+
+# Add legend
+legend("bottomright", legend=c("Train data", "Test data"), col=c("#800026", "#FEB24C"), lwd=4)
+
+par(pty="s")
+
+```
+
+#####PF4
+```{r,fig.width=6.5,fig.height=6.5}
+
+
+DF_clinical_50p_imputed_spread <- DF_clinical_50p_imputed %>% spread(key="protein",value="Imputed_log2")
+
+#select top 100 proteins
+DF_filter <- DF_clinical_50p_imputed_spread %>% 
+dplyr::select(sample_id,Survivors,Hospital_group,PF4) #,IL1RL1,PF4,SERPINA3
+
+
+  
+# CREATE COLUMN DX   
+DF_filter_DX <- DF_filter %>% mutate(DX = case_when(
+  
+Survivors == "Yes" ~ "0",
+   Survivors == "No" ~ "1",
+
+))  
+
+
+# MOVE DX COLUMN FIRST
+DF_filter_DX_first <- DF_filter_DX %>% dplyr::select("DX", everything())
+
+DF_filter_DX_first_groupA <- DF_filter_DX_first %>% filter(Hospital_group=="A") %>% dplyr::select(-sample_id,-Survivors,-Hospital_group)
+DF_filter_DX_first_groupB <-   DF_filter_DX_first %>% filter(Hospital_group=="B") %>% dplyr::select(-sample_id,-Survivors,-Hospital_group)
+
+
+
+dfA <- mutate_all(DF_filter_DX_first_groupA, function(x) as.numeric(as.character(x)))
+dfB <- mutate_all(DF_filter_DX_first_groupB, function(x) as.numeric(as.character(x)))
+
+
+dfA$DX <- as.factor(dfA$DX)
+dfB$DX <- as.factor(dfB$DX)
+
+# code did not work without that
+colnames(dfA) <- make.names(colnames(dfA))
+colnames(dfB) <- make.names(colnames(dfB))
+
+
+
+
+
+glm_model  <- glm(DX ~., data = dfA, family = 'binomial') #%>% stepAIC(trace = T, direction = 'backward')
+
+#let's see what it proposes
+summary(glm_model)
+
+
+#check results of Logistic regression
+Train_predicted <- dfA
+Train_predicted$results_Logistic <- predict(glm_model, dfA)
+
+
+#check results of Logistic regression
+test_predicted <- dfB
+test_predicted$results_Logistic <- predict(glm_model, dfB)
+
+
+par(pty="s")
+
+
+# Plot based on train
+roc1_t5 <- roc(Train_predicted$DX, Train_predicted$results_Logistic, 
+               plot=TRUE,
+               print.auc = TRUE,
+               legacy.axes=TRUE,
+               percent=TRUE,
+               xlab="False Positive Percentage",
+               ylab="True Positive Percentage",
+               col="#800026",
+               lwd=4,
+               print.auc.x=45,
+               ci=TRUE  # Add confidence interval
+)
+
+roc.info <- roc(Train_predicted$DX, Train_predicted$results_Logistic, legacy.axes=TRUE)
+
+roc.df <-  data.frame(tpp=roc.info$sensitivities*100,
+                      fpp=(1-roc.info$specificities)*100,
+                      thresholds=roc.info$thresholds)
+head(roc.df)
+tail(roc.df)
+roc.df[roc.df$tpp > 60 & roc.df$tpp < 80,]
+
+# Plot based on test 
+plot.roc(test_predicted$DX, test_predicted$results_Logistic, 
+         print.auc = TRUE,
+         legacy.axes=TRUE,
+         percent=TRUE,
+         col="#FEB24C",
+         lwd=4,
+         print.auc.y=40,
+         print.auc.x=65,
+         add=TRUE,
+         ci=TRUE  # Add confidence interval
+)
+
+# Add legend
+legend("bottomright", legend=c("Train data", "Test data"), col=c("#800026", "#FEB24C"), lwd=4)
+
+par(pty="s")
+
+```
+
+
+#####SERPINA3
+```{r,fig.width=6.5,fig.height=6.5}
+
+
+DF_clinical_50p_imputed_spread <- DF_clinical_50p_imputed %>% spread(key="protein",value="Imputed_log2")
+
+#select top 100 proteins
+DF_filter <- DF_clinical_50p_imputed_spread %>% 
+dplyr::select(sample_id,Survivors,Hospital_group,SERPINA3) #,IL1RL1,PF4,SERPINA3
+
+
+  
+# CREATE COLUMN DX   
+DF_filter_DX <- DF_filter %>% mutate(DX = case_when(
+  
+Survivors == "Yes" ~ "0",
+   Survivors == "No" ~ "1",
+
+))  
+
+
+# MOVE DX COLUMN FIRST
+DF_filter_DX_first <- DF_filter_DX %>% dplyr::select("DX", everything())
+
+DF_filter_DX_first_groupA <- DF_filter_DX_first %>% filter(Hospital_group=="A") %>% dplyr::select(-sample_id,-Survivors,-Hospital_group)
+DF_filter_DX_first_groupB <-   DF_filter_DX_first %>% filter(Hospital_group=="B") %>% dplyr::select(-sample_id,-Survivors,-Hospital_group)
+
+
+
+dfA <- mutate_all(DF_filter_DX_first_groupA, function(x) as.numeric(as.character(x)))
+dfB <- mutate_all(DF_filter_DX_first_groupB, function(x) as.numeric(as.character(x)))
+
+
+dfA$DX <- as.factor(dfA$DX)
+dfB$DX <- as.factor(dfB$DX)
+
+# code did not work without that
+colnames(dfA) <- make.names(colnames(dfA))
+colnames(dfB) <- make.names(colnames(dfB))
+
+
+
+
+
+glm_model  <- glm(DX ~., data = dfA, family = 'binomial') #%>% stepAIC(trace = T, direction = 'backward')
+
+#let's see what it proposes
+summary(glm_model)
+
+
+#check results of Logistic regression
+Train_predicted <- dfA
+Train_predicted$results_Logistic <- predict(glm_model, dfA)
+
+
+#check results of Logistic regression
+test_predicted <- dfB
+test_predicted$results_Logistic <- predict(glm_model, dfB)
+
+
+par(pty="s")
+
+
+# Plot based on train
+roc1_t5 <- roc(Train_predicted$DX, Train_predicted$results_Logistic, 
+               plot=TRUE,
+               print.auc = TRUE,
+               legacy.axes=TRUE,
+               percent=TRUE,
+               xlab="False Positive Percentage",
+               ylab="True Positive Percentage",
+               col="#800026",
+               lwd=4,
+               print.auc.x=45,
+               ci=TRUE  # Add confidence interval
+)
+
+roc.info <- roc(Train_predicted$DX, Train_predicted$results_Logistic, legacy.axes=TRUE)
+
+roc.df <-  data.frame(tpp=roc.info$sensitivities*100,
+                      fpp=(1-roc.info$specificities)*100,
+                      thresholds=roc.info$thresholds)
+head(roc.df)
+tail(roc.df)
+roc.df[roc.df$tpp > 60 & roc.df$tpp < 80,]
+
+# Plot based on test 
+plot.roc(test_predicted$DX, test_predicted$results_Logistic, 
+         print.auc = TRUE,
+         legacy.axes=TRUE,
+         percent=TRUE,
+         col="#FEB24C",
+         lwd=4,
+         print.auc.y=40,
+         print.auc.x=65,
+         add=TRUE,
+         ci=TRUE  # Add confidence interval
+)
+
+# Add legend
+legend("bottomright", legend=c("Train data", "Test data"), col=c("#800026", "#FEB24C"), lwd=4)
+
+par(pty="s")
+
+```
+
